@@ -629,6 +629,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("\x1b[", colored[0])
         self.assertTrue(colored[0].endswith("\t" + a.id))
 
+    def test_fzf_list_on_top_and_preview_moves_down_when_narrow(self):
+        args = cr.fzf_args(" · x", "leftoff preview")
+        self.assertIn("--layout=reverse", args)
+        window = args[args.index("--preview-window") + 1]
+        self.assertIn("<100(down,", window)
+        self.assertTrue(window.endswith("hidden)"))
+
     def test_fzf_renders_ansi(self):
         self.assertIn("--ansi", cr.fzf_args(" · x", "leftoff preview"))
 

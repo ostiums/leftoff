@@ -588,9 +588,9 @@ def rows(sessions: list[SessionInfo], color: bool = False) -> list[str]:
 
 
 def fzf_args(scope: str, preview_cmd: str) -> list[str]:
-    return ["fzf", "--ansi", "--delimiter", "\t", "--with-nth", "1", "--no-sort",
+    return ["fzf", "--ansi", "--layout=reverse", "--delimiter", "\t", "--with-nth", "1", "--no-sort",
             "--header", f"leftoff{scope} · Enter: open in Claude · Space: preview · Esc: quit",
-            "--preview", f"{preview_cmd} {{2}}", "--preview-window", "right,55%,wrap,hidden",
+            "--preview", f"{preview_cmd} {{2}}", "--preview-window", "right,55%,wrap,hidden,<100(down,60%,wrap,hidden)",
             "--bind", "space:toggle-preview"]
 
 
