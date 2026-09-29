@@ -1,15 +1,19 @@
 # leftoff
 
-**Pick up your ChatGPT and Codex chats where you left off, in Claude Code.**
+**Your ChatGPT Work and Codex chats, inside Claude Code.**
 
-leftoff reads the chats that ChatGPT's **Work mode**, the **Codex App** and the **Codex CLI** keep on your Mac and turns each one into a native Claude Code session. It opens with `claude --resume` in the folder where the chat ran, with the whole conversation in place.
+leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the **Codex CLI** keep on your Mac into Claude Code's own session store. Install it once, and then:
+
+- **`/resume` in Claude Code lists them** next to your Claude chats, as `⬡ ChatGPT: <title>` and `⬡ Codex: <title>`. Open one and continue where you left off, in the folder where it ran, with the whole conversation in place.
+- **Claude can search them.** Ask "how did we fix the flaky auth tests?" and Claude looks through past chats of the project, Codex ones included, because they are ordinary Claude sessions now.
+- **New chats show up on their own.** An async hook syncs them every time Claude Code starts. With nothing new it takes about 0.04 s and never delays startup.
 
 [![License: MIT](https://img.shields.io/github/license/ostiums/leftoff)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ostiums/leftoff)](https://github.com/ostiums/leftoff/releases)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-![leftoff demo: the leftoff picker lists chats from ChatGPT Work, Codex App and Codex CLI; one opens in Claude Code with its history, and imported chats also show up in Claude Code's /resume picker](assets/demo.gif)
+![leftoff demo: in Claude Code, /resume lists ChatGPT and Codex chats next to a regular Claude chat; a ChatGPT Work chat opens and Claude says where the work stopped; after /clear, Claude answers a question about an old Codex CLI chat by searching the project's past chats](assets/demo.gif)
 
 ## Install
 
@@ -17,7 +21,11 @@ leftoff reads the chats that ChatGPT's **Work mode**, the **Codex App** and the 
 curl -fsSL https://raw.githubusercontent.com/ostiums/leftoff/main/install.sh | zsh
 ```
 
-After that, every chat is listed in Claude Code's own `/resume` picker as `⬡ Codex: <title>` (or `⬡ ChatGPT: <title>` for Work mode), and `leftoff` in any project folder shows the chats that ran there.
+That's all. The installer imports your existing chats and turns on the sync hook, so the next `/resume` already shows them.
+
+Claude Code's built-in `/import codex` brings over Codex configuration (MCP servers, AGENTS.md). leftoff brings over the chats.
+
+There is also a `leftoff` command for the terminal: a picker over the chats that ran in the current folder, which opens the chosen one in Claude. It's handy when you're not in Claude yet, and optional.
 
 ## Where chats come from
 
