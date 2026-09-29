@@ -109,9 +109,9 @@ are titled `⬡ Codex: <title>` or `⬡ ChatGPT: <title>`), `Ctrl+A` shows chats
 The installer:
 - clones the repo into `~/.local/share/leftoff` and links `~/.local/bin/leftoff`
 - copies the `/leftoff` slash command to `~/.claude/commands/`
-- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start. It never delays startup, and a sync with nothing new takes about 0.04 s with 150+ chats;
+- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start. It never delays startup, and a sync with nothing new takes about 0.04 s with 150+ chats
 - runs the first sync, so chats are in `/resume` right away
-- installs `fzf` through Homebrew if brew is available (without fzf, chats are picked from a numbered list);
+- installs `fzf` through Homebrew if brew is available (without fzf, chats are picked from a numbered list)
 - adds `~/.local/bin` to PATH in `~/.zshrc` if it isn't there yet.
 
 Install without autosync: `curl -fsSL …/install.sh | zsh -s -- --no-autosync`. Switch it later with `leftoff autosync on|off`. Updates never turn it back on.
