@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Continue Codex chats in Claude Code.
+"""leftoff: pick up your ChatGPT Work and Codex chats where you left off, in Claude Code.
 
-Converts a Codex rollout (~/.codex/sessions/**/rollout-*.jsonl) into a native
-Claude Code session file so it can be opened with `claude --resume`.
+Converts a Codex rollout (~/.codex/sessions/**/rollout-*.jsonl, written by Codex App,
+Codex CLI and ChatGPT's Work mode) into a native Claude Code session file so it can be
+opened with `claude --resume`.
 """
 from __future__ import annotations
 
@@ -30,6 +31,9 @@ DIR_COLUMN_MAX = 24
 PREVIEW_TURNS = 15
 PREVIEW_CHARS = 600
 TITLE_PREFIX = "⬡ Codex: "  # hexagon marks imported chats in /resume; plain text, so search and rename keep working
+WORK_TITLE_PREFIX = "⬡ ChatGPT: "
+WORK = "ChatGPT Work"  # ChatGPT app's Work mode runs the Codex agent and writes the same rollouts
+SOURCE_COLORS = {WORK: "32", "Codex App": "36", "Codex CLI": "35", "Codex IDE": "33"}  # ANSI, themed by the terminal
 LEAD_USER_TEXT = "[Continuing a chat from Codex]"
 NOISE_PREFIXES = (
     "<environment_context>", "<app-context>", "<recommended_plugins>",
@@ -214,9 +218,10 @@ def build_turns(items: list[Item], header: str | None = None, max_chars: int = T
     return turns
 
 
-def context_header(date: str, cwd: str) -> str:
-    return (f"[This chat was moved from Codex ({date}, cwd {cwd}). The assistant replies below "
-            "were written by the Codex agent; [Codex tool: …] blocks are commands it ran and "
+def context_header(date: str, cwd: str, source: str = "Codex App") -> str:
+    where, agent = ("ChatGPT (Work mode)", "ChatGPT") if source == WORK else ("Codex", "Codex")
+    return (f"[This chat was moved from {where} ({date}, cwd {cwd}). The assistant replies below "
+            f"were written by the {agent} agent; [Codex tool: …] blocks are commands it ran and "
             "their output. Continue the work with this history in mind.]")
 
 
@@ -234,6 +239,7 @@ class SessionInfo:
     user_turns: int
     from_claude: bool
     is_chat: bool
+    source: str = "Codex App"
 
 
 def one_line(s: str, n: int = 60) -> str:
@@ -244,6 +250,18 @@ def one_line(s: str, n: int = 60) -> str:
 def is_subagent(meta: dict) -> bool:
     source = meta.get("source")
     return (isinstance(source, dict) and "subagent" in source) or meta.get("thread_source") == "guardian_review"
+
+
+def source_of(meta: dict) -> str:
+    """Which app wrote the rollout: ChatGPT's Work mode, Codex App, Codex CLI or a Codex IDE extension."""
+    originator = str(meta.get("originator") or "").lower()
+    if "work" in originator:
+        return WORK
+    if meta.get("source") in ("cli", "exec") or any(k in originator for k in ("tui", "cli", "exec")):
+        return "Codex CLI"
+    if any(k in originator for k in ("vscode", "jetbrains", "ide")):
+        return "Codex IDE"
+    return "Codex App"
 
 
 def _load_titles(codex_home: Path) -> dict[str, str]:
@@ -280,7 +298,7 @@ def _read_session(path: Path, titles: dict, origin: dict) -> SessionInfo | None:
         id=sid, path=path, cwd=(turn_cwds[-1] if turn_cwds else meta.get("cwd")) or str(Path.home()),
         started=meta.get("timestamp") or "", updated=path.stat().st_mtime,
         title=one_line(title), user_turns=len(user_texts), from_claude=sid in origin,
-        is_chat=not is_subagent(meta) and bool(user_texts),
+        is_chat=not is_subagent(meta) and bool(user_texts), source=source_of(meta),
     )
 
 
@@ -336,7 +354,8 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def render_records(turns: list[Turn], session_id: str, cwd: str, version: str, title: str) -> list[dict]:
+def render_records(turns: list[Turn], session_id: str, cwd: str, version: str, title: str,
+                   source: str = "Codex App") -> list[dict]:
     records, parent = [], None
     for n, turn in enumerate(turns):
         rec_uuid = str(uuid.uuid5(NAMESPACE, f"{session_id}:{n}"))
@@ -353,7 +372,8 @@ def render_records(turns: list[Turn], session_id: str, cwd: str, version: str, t
                         "userType": "external", "entrypoint": "cli", "cwd": cwd,
                         "sessionId": session_id, "version": version, "gitBranch": ""})
         parent = rec_uuid
-    records.append({"type": "custom-title", "customTitle": f"{TITLE_PREFIX}{title}", "sessionId": session_id})
+    prefix = WORK_TITLE_PREFIX if source == WORK else TITLE_PREFIX
+    records.append({"type": "custom-title", "customTitle": f"{prefix}{title}", "sessionId": session_id})
     return records
 
 
@@ -373,7 +393,7 @@ def _count_lines(path: Path) -> int:
 def import_session(info: SessionInfo, claude_dir: Path, state_path: Path, version: str) -> ImportResult:
     cwd = info.cwd if os.path.isdir(info.cwd) else str(Path.home())
     records, _ = load_jsonl(info.path)
-    turns = build_turns(extract_items(records), context_header(info.started[:10], info.cwd))
+    turns = build_turns(extract_items(records), context_header(info.started[:10], info.cwd, info.source))
     if not turns:
         raise ValueError("This chat has no messages to carry over")
 
@@ -393,7 +413,7 @@ def import_session(info: SessionInfo, claude_dir: Path, state_path: Path, versio
             break
         k += 1
 
-    out = render_records(turns, sid, cwd, version, info.title)
+    out = render_records(turns, sid, cwd, version, info.title, info.source)
     atomic_write(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out))
     state[info.id] = {"session_id": sid, "lines_written": len(out)}
     state.setdefault(SOURCES_KEY, {})[str(info.path)] = _source_stamp(info.path)
@@ -436,7 +456,8 @@ def sync(codex_home: Path, claude_dir: Path, state_path: Path, get_version) -> S
     return SyncResult(imported, unchanged)
 
 
-AUTOSYNC_MARK = "codex-resume sync"
+AUTOSYNC_MARK = "leftoff sync"
+LEGACY_AUTOSYNC_MARK = "codex-resume sync"  # hook written before the rename; replaced on the next `autosync on`
 
 
 def _load_settings(path: Path) -> dict:
@@ -454,7 +475,8 @@ def _load_settings(path: Path) -> dict:
 
 def _is_autosync_entry(entry) -> bool:
     return isinstance(entry, dict) and any(
-        isinstance(h, dict) and AUTOSYNC_MARK in str(h.get("command", "")) for h in entry.get("hooks") or [])
+        isinstance(h, dict) and any(m in str(h.get("command", "")) for m in (AUTOSYNC_MARK, LEGACY_AUTOSYNC_MARK))
+        for h in entry.get("hooks") or [])
 
 
 def autosync_enabled(settings_path: Path) -> bool:
@@ -468,10 +490,11 @@ def set_autosync(settings_path: Path, on: bool, command: str) -> bool:
     hooks = data.get("hooks", {})
     entries = hooks.get("SessionStart", [])
     others = [e for e in entries if not _is_autosync_entry(e)]
-    if on == (len(others) != len(entries)):
+    ours = {"hooks": [{"type": "command", "command": command, "async": True}]}
+    if (on and entries == others + [ours]) or (not on and others == entries):
         return False
     if on:
-        others.append({"hooks": [{"type": "command", "command": command, "async": True}]})
+        others.append(ours)
     if others:
         hooks["SessionStart"] = others
     else:
@@ -497,7 +520,18 @@ def _claude_dir() -> Path:
 
 
 def _state_path() -> Path:
-    return Path(os.environ.get("CODEX_RESUME_STATE") or Path.home() / ".local/state/codex-resume/imports.json")
+    if os.environ.get("LEFTOFF_STATE"):
+        return Path(os.environ["LEFTOFF_STATE"])
+    path = Path.home() / ".local/state/leftoff/imports.json"
+    legacy = Path.home() / ".local/state/codex-resume/imports.json"  # before the rename
+    if legacy.exists() and not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(legacy, path)
+        try:
+            legacy.parent.rmdir()
+        except OSError:
+            pass
+    return path
 
 
 def _claude_version() -> str:
@@ -529,26 +563,33 @@ def _dir_name(cwd: str) -> str:
     return Path(cwd).name or cwd
 
 
-def rows(sessions: list[SessionInfo]) -> list[str]:
+def rows(sessions: list[SessionInfo], color: bool = False) -> list[str]:
     """One line per chat: visible text, a tab, then the full id (hidden in fzf).
 
-    The folder column appears only when the chats come from more than one folder."""
+    The folder and source columns appear only when the chats differ in them."""
+    def paint(text: str, code: str) -> str:
+        return f"\x1b[{code}m{text}\x1b[0m" if color else text
+
     show_dir = len({s.cwd for s in sessions}) > 1
+    show_source = len({s.source for s in sessions}) > 1
     dirs = [one_line(_dir_name(s.cwd), DIR_COLUMN_MAX) for s in sessions]
     width = max(map(len, dirs), default=0)
+    source_width = max((len(s.source) for s in sessions), default=0)
     out = []
     for s, d in zip(sessions, dirs):
-        cols = [dt.datetime.fromtimestamp(s.updated).strftime("%Y-%m-%d %H:%M")]
+        cols = [paint(dt.datetime.fromtimestamp(s.updated).strftime("%Y-%m-%d %H:%M"), "2")]
         if show_dir:
             cols.append(d.ljust(width))
-        cols.append(s.title + (" ↩Claude" if s.from_claude else ""))
+        if show_source:
+            cols.append(paint(s.source.ljust(source_width), SOURCE_COLORS.get(s.source, "0")))
+        cols.append(s.title + (paint(" ↩Claude", "2") if s.from_claude else ""))
         out.append("  ".join(cols) + "\t" + s.id)
     return out
 
 
 def fzf_args(scope: str, preview_cmd: str) -> list[str]:
-    return ["fzf", "--delimiter", "\t", "--with-nth", "1", "--no-sort",
-            "--header", f"Codex → Claude{scope} · Enter: open · Space: preview · Esc: quit",
+    return ["fzf", "--ansi", "--delimiter", "\t", "--with-nth", "1", "--no-sort",
+            "--header", f"leftoff{scope} · Enter: open in Claude · Space: preview · Esc: quit",
             "--preview", f"{preview_cmd} {{2}}", "--preview-window", "right,55%,wrap,hidden",
             "--bind", "space:toggle-preview"]
 
@@ -566,14 +607,14 @@ def _chats(global_: bool) -> list[SessionInfo]:
 
 def _empty_hint(global_: bool) -> str:
     if global_:
-        return "No Codex chats"
-    return f"No Codex chats in this folder ({_short_cwd(os.getcwd())}). All chats: codex-resume global"
+        return "No ChatGPT Work or Codex chats"
+    return f"No ChatGPT Work or Codex chats in this folder ({_short_cwd(os.getcwd())}). All chats: leftoff global"
 
 
 def pick(sessions: list[SessionInfo], scope: str) -> SessionInfo | None:
     if shutil.which("fzf"):
         preview_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.realpath(__file__))} preview"
-        proc = subprocess.run(fzf_args(scope, preview_cmd), input="\n".join(rows(sessions)),
+        proc = subprocess.run(fzf_args(scope, preview_cmd), input="\n".join(rows(sessions, color=True)),
                               stdout=subprocess.PIPE, text=True)
         if proc.returncode != 0 or not proc.stdout.strip():
             return None
@@ -601,7 +642,7 @@ def pick(sessions: list[SessionInfo], scope: str) -> SessionInfo | None:
 
 def _preview(s: SessionInfo) -> None:
     records, _ = load_jsonl(s.path)
-    print(f"{s.title}\n{_short_cwd(s.cwd)} · {s.started[:10]} · {s.user_turns} messages\n")
+    print(f"{s.title}\n{s.source} · {_short_cwd(s.cwd)} · {s.started[:10]} · {s.user_turns} messages\n")
     for turn in build_turns(extract_items(records))[:PREVIEW_TURNS]:
         print(f"── {turn.role} ──\n{truncate(turn.text, PREVIEW_CHARS)}\n")
 
@@ -620,7 +661,7 @@ def _do_import(s: SessionInfo) -> ImportResult:
 
 
 def _hook_command() -> str:
-    link = Path.home() / ".local/bin/codex-resume"
+    link = Path.home() / ".local/bin/leftoff"
     exe = link if link.exists() else Path(os.path.realpath(__file__))
     return f"{shlex.quote(str(exe))} sync --quiet"
 
@@ -639,14 +680,14 @@ def update(repo: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     def add_global_flag(p: argparse.ArgumentParser, default) -> argparse.ArgumentParser:
         p.add_argument("-g", "--global", dest="global_", action="store_true", default=default,
-                       help="chats from all folders (same as codex-resume global)")
+                       help="chats from all folders (same as leftoff global)")
         return p
 
     # -g works before or after the subcommand; SUPPRESS keeps a subparser from resetting it.
     parser = add_global_flag(argparse.ArgumentParser(
-        prog="codex-resume", description="Continue a Codex chat in Claude Code"), False)
+        prog="leftoff", description="Pick up ChatGPT Work and Codex chats where you left off, in Claude Code"), False)
     sub = parser.add_subparsers(dest="cmd")
-    p_list = add_global_flag(sub.add_parser("list", help="list Codex chats"), argparse.SUPPRESS)
+    p_list = add_global_flag(sub.add_parser("list", help="list ChatGPT Work and Codex chats"), argparse.SUPPRESS)
     p_list.add_argument("--json", action="store_true")
     p_list.add_argument("--all", action="store_true", help="include internal sessions")
     sub.add_parser("import", help="convert a chat").add_argument("id")
@@ -654,8 +695,8 @@ def main(argv: list[str] | None = None) -> int:
                     argparse.SUPPRESS).add_argument("id", nargs="?")
     sub.add_parser("global", help="pick a chat from all folders and open in claude").add_argument("id", nargs="?")
     sub.add_parser("preview", help="show the beginning of a chat").add_argument("id")
-    sub.add_parser("update", help="update codex-resume (git pull + install.sh)")
-    sub.add_parser("autosync", help="sync Codex chats in the background at every Claude start").add_argument(
+    sub.add_parser("update", help="update leftoff (git pull + install.sh)")
+    sub.add_parser("autosync", help="sync chats in the background at every Claude start").add_argument(
         "state", nargs="?", choices=["on", "off", "status"], default="status")
     sub.add_parser("sync", help="import all new and changed chats (for /resume)").add_argument(
         "--quiet", action="store_true")
@@ -669,10 +710,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 print(json.dumps([{"id": s.id, "title": s.title, "cwd": s.cwd,
                                    "updated": dt.datetime.fromtimestamp(s.updated).isoformat(timespec="minutes"),
-                                   "user_turns": s.user_turns, "from_claude": s.from_claude}
+                                   "user_turns": s.user_turns, "from_claude": s.from_claude,
+                                   "source": s.source}
                                   for s in sessions], ensure_ascii=False, indent=1))
             else:
-                for line in rows(sessions):
+                for line in rows(sessions, color=sys.stdout.isatty()):
                     print(line)
             return 0
         if args.cmd == "sync":

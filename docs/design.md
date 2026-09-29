@@ -1,17 +1,18 @@
-# codex-resume — continue Codex chats in Claude Code
+# leftoff: continue ChatGPT Work and Codex chats in Claude Code
 
 Date: 2026-09-23
 
 ## Goal
 
-Pick any Codex chat and continue it in Claude Code as a native session
+Pick any Codex-format chat (Codex App, Codex CLI, or ChatGPT app Work mode, which
+all write `~/.codex/sessions` rollouts) and continue it in Claude Code as a native session
 (`claude --resume`), in the same working directory, with the prior dialogue
 visible to the model. One command from the terminal, or a slash command from
 inside Claude Code.
 
 Success criteria:
 
-- `codex-resume` → fuzzy picker → chosen chat opens in `claude --resume` in its
+- `leftoff` → fuzzy picker → chosen chat opens in `claude --resume` in its
   original `cwd`, and Claude answers with awareness of the earlier conversation.
 - Imported sessions show up in Claude's own `/resume` list with a recognizable
   title (`⬡ Codex: <title>`).
@@ -152,7 +153,7 @@ recalls the imported content.
 ### Session id and re-import
 
 - `session_id = uuid5(NAMESPACE, codex_id)` with a fixed namespace UUID.
-- State file `~/.local/state/codex-resume/imports.json`:
+- State file `~/.local/state/leftoff/imports.json`:
   `{codex_id: {session_id, path, lines_written}}`.
 - On import, if the target file exists and has more lines than
   `lines_written` (user continued in Claude), write to a fresh id
@@ -162,24 +163,24 @@ recalls the imported content.
 
 ## Interface
 
-Single file `codex_resume.py` (stdlib only, Python ≥ 3.9), symlinked as
-`~/.local/bin/codex-resume`.
+Single file `leftoff.py` (stdlib only, Python ≥ 3.9), symlinked as
+`~/.local/bin/leftoff`.
 
 Scope: by default `list` and the picker show only chats whose recorded cwd
-equals the current directory (both `realpath`-resolved). `codex-resume global`
+equals the current directory (both `realpath`-resolved). `leftoff global`
 or `-g/--global` shows chats from all folders. An explicit `<id>` always
 resolves across all folders. The Claude session is always created and opened
 in the chat's own cwd. An empty local list prints a hint pointing to
-`codex-resume global` (exit 0 for `list`, exit 1 for the picker).
+`leftoff global` (exit 0 for `list`, exit 1 for the picker).
 
 ```
-codex-resume                 # = resume (interactive picker, current folder)
-codex-resume global [<id>]   # picker over all folders
-codex-resume list [--json]   # chats, newest first
-codex-resume import <id>     # convert; print session id, path, resume command
-codex-resume resume [<id>]   # import, then chdir(cwd) and exec `claude --resume <sid>`
-codex-resume preview <id>    # first ~15 turns as plain text (fzf preview)
-codex-resume update          # git pull own checkout + re-run install.sh
+leftoff                 # = resume (interactive picker, current folder)
+leftoff global [<id>]   # picker over all folders
+leftoff list [--json]   # chats, newest first
+leftoff import <id>     # convert; print session id, path, resume command
+leftoff resume [<id>]   # import, then chdir(cwd) and exec `claude --resume <sid>`
+leftoff preview <id>    # first ~15 turns as plain text (fzf preview)
+leftoff update          # git pull own checkout + re-run install.sh
 ```
 
 `<id>` accepts the full Codex id or any unique substring of it (≥ 6 chars).
@@ -189,7 +190,7 @@ full id. The folder column appears only in global mode (`~` for home). No
 message-count column. `--json` prints objects `{id, title, cwd, updated,
 user_turns, from_claude}`.
 
-Picker: `fzf --delimiter '\t' --with-nth 1`, preview `codex-resume preview {2}`
+Picker: `fzf --delimiter '\t' --with-nth 1`, preview `leftoff preview {2}`
 hidden by default and toggled with Space (`--bind space:toggle-preview`; the
 query therefore cannot contain spaces). If `fzf` is missing, fall back to a
 numbered menu reading a number from stdin. Cancel → exit 130, nothing written.
@@ -200,33 +201,33 @@ id is resolved among visible chats first, then among hidden service sessions.
 
 ### Sync and autosync
 
-`codex-resume sync` imports every visible chat whose rollout is new or changed.
+`leftoff sync` imports every visible chat whose rollout is new or changed.
 The state file keeps `__sources__`: rollout path → `[mtime_ns, size]` recorded at
 the last import/sync; matching files are skipped without being opened (measured:
 0.04 s for 204 rollouts / 98 MB; first full sync 0.8 s). A chat is re-imported
 only when its Codex file changed, so a Claude-side continuation never causes a
 duplicate by itself.
 
-`codex-resume autosync on|off|status` adds/removes one `SessionStart` hook
-`{"type": "command", "command": "<abs path>/codex-resume sync --quiet", "async": true}`
+`leftoff autosync on|off|status` adds/removes one `SessionStart` hook
+`{"type": "command", "command": "<abs path>/leftoff sync --quiet", "async": true}`
 in `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`, leaving every other setting
 untouched and refusing to write if the file can't be parsed. `on` also runs the
 first sync immediately.
 
 ### Slash command
 
-`commands/codex-import.md` (installed as `/codex-import`): injects the output of
-`codex-resume sync` and `autosync status` with `` !`…` `` and tells the user to
+`commands/leftoff.md` (installed as `/leftoff`): injects the output of
+`leftoff sync` and `autosync status` with `` !`…` `` and tells the user to
 pick the chat in the built-in `/resume` picker (type `Codex` to filter, `Ctrl+A`
 for all folders). Custom commands can't render their own full-screen picker, and
 AskUserQuestion is limited to 4 options, so the native picker is used instead.
 
 ## Install
 
-`install.sh` (zsh, re-runnable): symlink `~/.local/bin/codex-resume`, copy the
+`install.sh` (zsh, re-runnable): symlink `~/.local/bin/leftoff`, copy the
 slash command into `${CLAUDE_CONFIG_DIR:-~/.claude}/commands/`, `brew install
 fzf` if fzf and brew are available, and add `~/.local/bin` to PATH via
-`~/.zshrc` if missing. `codex-resume update` runs `git pull --ff-only` on the
+`~/.zshrc` if missing. `leftoff update` runs `git pull --ff-only` on the
 tool's own checkout and re-runs `install.sh`.
 
 ## Testing

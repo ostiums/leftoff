@@ -2,7 +2,7 @@ import contextlib, io, json, os, sys, tempfile, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import codex_resume as cr
+import leftoff as cr
 
 TS = "2026-09-21T10:00:01.000Z"
 
@@ -205,6 +205,17 @@ class DiscoverTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_source_from_originator(self):
+        cases = {"work-000001": ({"originator": "codex_work_desktop"}, "ChatGPT Work"),
+                 "app-0000001": ({"originator": "Codex Desktop"}, "Codex App"),
+                 "cli-0000001": ({"originator": "codex-tui", "source": "cli"}, "Codex CLI"),
+                 "exec-000001": ({"originator": "codex_exec", "source": "exec"}, "Codex CLI"),
+                 "ide-0000001": ({"originator": "codex_vscode"}, "Codex IDE")}
+        for sid, (kw, _) in cases.items():
+            write_rollout(self.home, [meta(id=sid, **kw), msg("user", "q")])
+        found = {s.id: s.source for s in cr.discover(self.home)}
+        self.assertEqual(found, {sid: label for sid, (_, label) in cases.items()})
+
     def test_excludes_subagents_and_noise_only(self):
         write_rollout(self.home, [meta(id="a" * 8 + "-real"), msg("user", "question")])
         write_rollout(self.home, [meta(id="b" * 8 + "-guard", thread_source="guardian_review"), msg("user", "x")])
@@ -318,6 +329,15 @@ class WriteTests(unittest.TestCase):
         for r in recs[:2]:
             self.assertEqual((r["sessionId"], r["cwd"], r["version"], r["isSidechain"]), ("sid", "/w", "2.1.280", False))
 
+    def test_chatgpt_work_title_prefix(self):
+        recs = cr.render_records([cr.Turn("user", ["q"], TS)], "sid", "/w", "v", "Topic", source="ChatGPT Work")
+        self.assertEqual(recs[-1]["customTitle"], "⬡ ChatGPT: Topic")
+
+    def test_context_header_names_chatgpt_for_work_chats(self):
+        h = cr.context_header("2026-09-21", "/tmp/x", "ChatGPT Work")
+        self.assertIn("ChatGPT", h)
+        self.assertNotIn("Codex agent", h)
+
     def test_render_user_turn_with_images_as_block_list(self):
         blk = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
         recs = cr.render_records([cr.Turn("user", ["q"], TS, images=[blk])], "sid", "/w", "v", "T")
@@ -421,7 +441,7 @@ class SyncTests(unittest.TestCase):
 
 
 class AutosyncTests(unittest.TestCase):
-    CMD = "/opt/bin/codex-resume sync --quiet"
+    CMD = "/opt/bin/leftoff sync --quiet"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -471,13 +491,52 @@ class AutosyncTests(unittest.TestCase):
     def test_status_without_settings_file(self):
         self.assertFalse(cr.autosync_enabled(self.settings))
 
+    LEGACY = {"type": "command", "command": "/opt/bin/codex-resume sync --quiet", "async": True}
+
+    def test_legacy_hook_counts_as_enabled_and_on_rewrites_it(self):
+        self.settings.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [self.LEGACY]}]}}))
+        self.assertTrue(cr.autosync_enabled(self.settings))
+        self.assertTrue(cr.set_autosync(self.settings, True, self.CMD))
+        [entry] = self.hooks()
+        self.assertEqual(entry["hooks"], [{"type": "command", "command": self.CMD, "async": True}])
+
+    def test_off_removes_legacy_hook(self):
+        self.settings.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [self.LEGACY]}]}}))
+        self.assertTrue(cr.set_autosync(self.settings, False, self.CMD))
+        self.assertFalse(cr.autosync_enabled(self.settings))
+
+
+class StatePathTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old = {k: os.environ.get(k) for k in ("HOME", "LEFTOFF_STATE")}
+        os.environ["HOME"] = self.tmp.name
+        os.environ.pop("LEFTOFF_STATE", None)
+
+    def tearDown(self):
+        for k, v in self.old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def test_legacy_state_is_moved(self):
+        legacy = Path(self.tmp.name) / ".local/state/codex-resume/imports.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('{"x": 1}')
+        path = cr._state_path()
+        self.assertEqual(path, Path(self.tmp.name) / ".local/state/leftoff/imports.json")
+        self.assertEqual(json.loads(path.read_text()), {"x": 1})
+        self.assertFalse(legacy.exists())
+
 
 class CliTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.env = {"CODEX_HOME": str(root / "codex"), "CLAUDE_CONFIG_DIR": str(root / "claude"),
-                    "CODEX_RESUME_STATE": str(root / "state.json")}
+                    "LEFTOFF_STATE": str(root / "state.json")}
         self.old = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
         write_rollout(root / "codex", [meta(id="cli-00000001", cwd=str(root)),
@@ -553,8 +612,32 @@ class CliTests(unittest.TestCase):
         self.assertIn("  ~  ", shown[1])
         self.assertEqual(shown[0].index("First"), shown[1].index("Second"))
 
+    def test_rows_show_source_only_when_mixed(self):
+        a, b = self.info("/a/p", "One"), self.info("/a/p", "Two")
+        self.assertNotIn("Codex", cr.rows([a, b])[0])
+        b.source = "ChatGPT Work"
+        shown = [l.split("\t")[0] for l in cr.rows([a, b])]
+        self.assertIn("Codex App", shown[0])
+        self.assertIn("ChatGPT Work", shown[1])
+        self.assertEqual(shown[0].index("One"), shown[1].index("Two"))
+
+    def test_rows_color_only_on_request(self):
+        a, b = self.info("/a/p", "One"), self.info("/a/p", "Two")
+        b.source = "Codex CLI"
+        self.assertNotIn("\x1b[", "".join(cr.rows([a, b])))
+        colored = cr.rows([a, b], color=True)
+        self.assertIn("\x1b[", colored[0])
+        self.assertTrue(colored[0].endswith("\t" + a.id))
+
+    def test_fzf_renders_ansi(self):
+        self.assertIn("--ansi", cr.fzf_args(" · x", "leftoff preview"))
+
+    def test_list_json_has_source(self):
+        _, out, _ = self.run_main("list", "-g", "--json")
+        self.assertTrue(all(d["source"] == "Codex App" for d in json.loads(out)))
+
     def test_fzf_preview_hidden_until_space(self):
-        args = cr.fzf_args(" · x", "codex-resume preview")
+        args = cr.fzf_args(" · x", "leftoff preview")
         self.assertIn("space:toggle-preview", args[args.index("--bind") + 1])
         self.assertIn("hidden", args[args.index("--preview-window") + 1])
         self.assertEqual(args[args.index("--with-nth") + 1], "1")
@@ -564,16 +647,16 @@ class CliTests(unittest.TestCase):
         os.chdir(self.root / "empty")
         code, out, err = self.run_main("list")
         self.assertEqual((code, out), (0, ""))
-        self.assertIn("codex-resume global", err)
+        self.assertIn("leftoff global", err)
         code, _, err = self.run_main()
         self.assertEqual(code, 1)
-        self.assertIn("codex-resume global", err)
+        self.assertIn("leftoff global", err)
 
     def test_global_subcommand_with_no_chats(self):
         os.environ["CODEX_HOME"] = str(self.root / "empty")
         code, _, err = self.run_main("global")
         self.assertEqual(code, 1)
-        self.assertIn("No Codex chats", err)
+        self.assertIn("No ChatGPT Work or Codex chats", err)
 
     def test_update_pulls_repo_and_reinstalls(self):
         import subprocess
@@ -604,7 +687,7 @@ class CliTests(unittest.TestCase):
         for argv in (["-g"], ["--global"]):
             code, _, err = self.run_main(*argv)
             self.assertEqual(code, 1)
-            self.assertIn("No Codex chats", err)
+            self.assertIn("No ChatGPT Work or Codex chats", err)
 
     def test_explicit_id_prefers_visible_chats(self):
         # "0000000" matches the chat, the other chat and the hidden guardian session;
@@ -637,7 +720,7 @@ class CliTests(unittest.TestCase):
         code, out, _ = self.run_main("list", "--json")
         data = json.loads(out)
         self.assertEqual([d["id"] for d in data], ["cli-00000001"])
-        self.assertEqual(set(data[0]), {"id", "title", "cwd", "updated", "user_turns", "from_claude"})
+        self.assertEqual(set(data[0]), {"id", "title", "cwd", "updated", "user_turns", "from_claude", "source"})
 
     def test_import_prints_resume_command(self):
         code, out, _ = self.run_main("import", "00000001")
@@ -681,15 +764,15 @@ class InstallerTests(unittest.TestCase):
         repo = Path(__file__).resolve().parent.parent
         self.origin = self.root / "origin"
         self.origin.mkdir()
-        for name in ("codex_resume.py", "install.sh"):
+        for name in ("leftoff.py", "install.sh"):
             shutil.copy2(repo / name, self.origin / name)
         shutil.copytree(repo / "commands", self.origin / "commands")
         git = lambda *a: subprocess.run(["git", *a], cwd=self.origin, check=True, capture_output=True)
         git("init", "-q", "-b", "main")
         git("add", ".")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
-        self.env = {**os.environ, "HOME": str(self.home), "CODEX_RESUME_REPO": str(self.origin)}
-        for k in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "CODEX_RESUME_STATE"):
+        self.env = {**os.environ, "HOME": str(self.home), "LEFTOFF_REPO": str(self.origin)}
+        for k in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "LEFTOFF_STATE"):
             self.env.pop(k, None)
         self.installer = (repo / "install.sh").read_text()
 
@@ -711,31 +794,72 @@ class InstallerTests(unittest.TestCase):
     def test_piped_install_clones_links_and_enables_autosync(self):
         r = self.pipe_install()
         self.assertEqual(r.returncode, 0, r.stderr)
-        clone = self.home / ".local/share/codex-resume"
+        clone = self.home / ".local/share/leftoff"
         self.assertTrue((clone / ".git").is_dir())
-        link = self.home / ".local/bin/codex-resume"
-        self.assertEqual(Path(os.path.realpath(link)), (clone / "codex_resume.py").resolve())
-        self.assertTrue((self.home / ".claude/commands/codex-import.md").exists())
+        link = self.home / ".local/bin/leftoff"
+        self.assertEqual(Path(os.path.realpath(link)), (clone / "leftoff.py").resolve())
+        self.assertTrue((self.home / ".claude/commands/leftoff.md").exists())
         self.assertTrue(self.autosync_on())
 
     def test_reinstall_does_not_reenable_autosync(self):
         import subprocess
         self.assertEqual(self.pipe_install().returncode, 0)
-        link = self.home / ".local/bin/codex-resume"
+        link = self.home / ".local/bin/leftoff"
         subprocess.run([str(link), "autosync", "off"], env=self.env, check=True, capture_output=True)
         self.assertFalse(self.autosync_on())
-        r = subprocess.run([str(self.home / ".local/share/codex-resume/install.sh")],
+        r = subprocess.run([str(self.home / ".local/share/leftoff/install.sh")],
                            env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.autosync_on())
         self.assertEqual(self.pipe_install().returncode, 0)  # piped re-run = update of the clone
         self.assertFalse(self.autosync_on())
 
+    def test_upgrade_from_codex_resume(self):
+        """`codex-resume update` pulls the renamed repo into the old clone and runs its new install.sh."""
+        import subprocess
+        legacy = self.home / ".local/share/codex-resume"
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(legacy)], check=True)
+        bin_dir = self.home / ".local/bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "codex-resume").symlink_to(legacy / "leftoff.py")
+        commands = self.home / ".claude/commands"
+        commands.mkdir(parents=True)
+        (commands / "codex-import.md").write_text("old")
+        hook = {"type": "command", "command": f"{bin_dir}/codex-resume sync --quiet", "async": True}
+        (self.home / ".claude/settings.json").write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [hook]}]}}))
+        state = self.home / ".local/state/codex-resume/imports.json"
+        state.parent.mkdir(parents=True)
+        state.write_text("{}")
+
+        r = subprocess.run([str(legacy / "install.sh")], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        clone = self.home / ".local/share/leftoff"
+        self.assertTrue((clone / ".git").is_dir())
+        self.assertFalse(legacy.exists())
+        self.assertEqual(Path(os.path.realpath(bin_dir / "leftoff")), (clone / "leftoff.py").resolve())
+        self.assertFalse((bin_dir / "codex-resume").is_symlink())
+        self.assertFalse((commands / "codex-import.md").exists())
+        self.assertTrue((commands / "leftoff.md").exists())
+        cmds = json.dumps(self.settings())
+        self.assertIn("leftoff sync", cmds)
+        self.assertNotIn("codex-resume", cmds)
+        self.assertTrue((self.home / ".local/state/leftoff/imports.json").exists())
+
+    def test_upgrade_keeps_autosync_off(self):
+        import subprocess
+        legacy = self.home / ".local/share/codex-resume"
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(legacy)], check=True)
+        (self.home / ".local/bin").mkdir(parents=True)
+        (self.home / ".local/bin/codex-resume").symlink_to(legacy / "leftoff.py")
+        r = subprocess.run([str(legacy / "install.sh")], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.autosync_on())
+
     def test_no_autosync_flag(self):
         r = self.pipe_install("--no-autosync")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.autosync_on())
-        self.assertTrue((self.home / ".local/bin/codex-resume").exists())
+        self.assertTrue((self.home / ".local/bin/leftoff").exists())
 
 
 if __name__ == "__main__":

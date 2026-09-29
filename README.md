@@ -1,21 +1,34 @@
-# codex-resume
+# leftoff
 
-Continue your OpenAI Codex chats in Claude Code. Every Codex chat (Desktop app or CLI) becomes a native Claude Code session that opens with `claude --resume` in the folder where the chat ran.
+**Pick up your ChatGPT and Codex chats where you left off, in Claude Code.**
 
-[![License: MIT](https://img.shields.io/github/license/ostiums/codex-resume)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/ostiums/codex-resume)](https://github.com/ostiums/codex-resume/releases)
+leftoff reads the chats that ChatGPT's **Work mode**, the **Codex App** and the **Codex CLI** keep on your Mac and turns each one into a native Claude Code session. It opens with `claude --resume` in the folder where the chat ran, with the whole conversation in place.
+
+[![License: MIT](https://img.shields.io/github/license/ostiums/leftoff)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/ostiums/leftoff)](https://github.com/ostiums/leftoff/releases)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-![codex-resume demo: Codex chats listed in Claude Code's /resume picker next to regular sessions, a preview of an imported chat, then the codex-resume fzf picker in the terminal](assets/demo.gif)
+![leftoff demo: the leftoff picker lists chats from ChatGPT Work, Codex App and Codex CLI; one opens in Claude Code with its history, and imported chats also show up in Claude Code's /resume picker](assets/demo.gif)
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ostiums/codex-resume/main/install.sh | zsh
+curl -fsSL https://raw.githubusercontent.com/ostiums/leftoff/main/install.sh | zsh
 ```
 
-After that, every Codex chat is listed in Claude Code's own `/resume` picker as `⬡ Codex: <title>`, and `codex-resume` in any project folder shows the Codex chats that ran there.
+After that, every chat is listed in Claude Code's own `/resume` picker as `⬡ Codex: <title>` (or `⬡ ChatGPT: <title>` for Work mode), and `leftoff` in any project folder shows the chats that ran there.
+
+## Where chats come from
+
+All three write the same session files to `~/.codex/sessions`, so leftoff reads them the same way and labels each chat with its source:
+
+| Source | How it's detected |
+|---|---|
+| ChatGPT Work | ChatGPT app for Mac, Work mode (`originator: codex_work_desktop`) |
+| Codex App | Codex desktop app |
+| Codex CLI | `codex` in the terminal, including `codex exec` |
+| Codex IDE | Codex extension in VS Code or JetBrains |
 
 Requirements: macOS or Linux with zsh, `git`, `python3` 3.9 or newer, Codex and Claude Code. No other dependencies; `fzf` is installed through Homebrew when brew is present.
 
@@ -24,7 +37,7 @@ Requirements: macOS or Linux with zsh, `git`, `python3` 3.9 or newer, Codex and 
 - Your messages and the Codex replies, in order, including everything before a Codex context compaction.
 - Tool calls as short text blocks (`[Codex tool: exec]`, the command, then the output cut to 2,000 characters), so Claude knows what was run without a multi-megabyte context.
 - Screenshots you attached in Codex, as real images Claude can see.
-- The chat title, shown in `/resume` as `⬡ Codex: <title>`.
+- The chat title, shown in `/resume` as `⬡ Codex: <title>` or `⬡ ChatGPT: <title>`.
 
 Left out: Codex system prompts, `<environment_context>` and AGENTS.md inserts, developer messages, encrypted reasoning, and the internal approval-reviewer sessions Codex Desktop creates. Codex data is only read, never modified.
 
@@ -34,7 +47,7 @@ Measured on 2026-09-23 with one real Codex Desktop 0.155 chat: 113 tool calls, o
 
 | Tool | What Claude gets | History carried | Codex system text in the history | Title in `/resume` |
 |---|---|---|---|---|
-| **codex-resume** | native session | all 43 replies, tool calls as compact text: 189k characters | filtered out | `⬡ Codex: <title>` |
+| **leftoff** | native session | all 43 replies, tool calls as compact text: 189k characters | filtered out | `⬡ Codex: <title>` |
 | [transession](https://github.com/inmzhang/transession) 0.2.0 | native session | all replies with full tool output and images: 2.6M characters, about 180k tokens on the first prompt | kept, replayed as user messages | first message, which is Codex system text |
 | [codex2claude](https://github.com/MisterBrookT/codex2claude) | native session (runs transession, then cleans up) | full history, 5.8 MB session file | partly filtered | first message |
 | [cli-continues](https://github.com/yigitkonur/cli-continues) 4.1.1 | a summary prompt in a new session | last 10 messages (50 with `--preset full`); replies from before the compaction are lost in the default preset | partly filtered | none |
@@ -45,32 +58,34 @@ Where the others do more: cli-continues moves sessions between 16 coding agents,
 ## Usage
 
 ```sh
-codex-resume                     # Codex chats from the CURRENT folder: pick one in fzf and open it in Claude
-codex-resume global              # same, across all folders (-g / --global is a synonym)
-codex-resume resume <id>         # open a specific chat (looked up across all folders)
-codex-resume list [-g] [--json]  # list chats: folder, title; current folder only by default
-codex-resume import <id>         # convert only, print the command to continue
-codex-resume preview <id>        # show the beginning of a chat
-codex-resume sync                # import all new/changed chats so they appear in /resume
-codex-resume autosync on|off     # run sync in the background at every Claude start
+leftoff                     # chats from the CURRENT folder: pick one in fzf and open it in Claude
+leftoff global              # same, across all folders (-g / --global is a synonym)
+leftoff resume <id>         # open a specific chat (looked up across all folders)
+leftoff list [-g] [--json]  # list chats: folder, title; current folder only by default
+leftoff import <id>         # convert only, print the command to continue
+leftoff preview <id>        # show the beginning of a chat
+leftoff sync                # import all new/changed chats so they appear in /resume
+leftoff autosync on|off     # run sync in the background at every Claude start
 ```
 
 `<id>` is a full Codex session id or any unique part of it (6+ characters).
 
 The chat always opens in Claude in the folder where it last ran in Codex (the
 latest `turn_context`, falling back to where it started), even if
-`codex-resume global` was started somewhere else. Folders are compared after
+`leftoff global` was started somewhere else. Folders are compared after
 resolving symlinks.
 
 In the current-folder list you see the date and the chat title; in `global`
-mode the folder name is shown between them (`~` for your home folder). The
+mode the folder name is shown between them (`~` for your home folder). When the
+chats come from more than one app, a colored source column (ChatGPT Work, Codex
+App, Codex CLI) appears before the title. The
 preview is hidden; **Space** shows and hides it. Because of that you can't type
 a space in the fzf search field, so search by a single word. The full path is
 shown in the preview.
 
-Inside Claude Code: `/codex-import` syncs all chats. Then pick one in the
-built-in `/resume` picker: type `Codex` to filter (imported chats are titled
-`⬡ Codex: <title>`), `Ctrl+A` shows chats from all folders, `Space` previews,
+Inside Claude Code: `/leftoff` syncs all chats. Then pick one in the
+built-in `/resume` picker: type `Codex` or `ChatGPT` to filter (imported chats
+are titled `⬡ Codex: <title>` or `⬡ ChatGPT: <title>`), `Ctrl+A` shows chats from all folders, `Space` previews,
 `Enter` opens.
 
 ## Conversion limits
@@ -84,16 +99,16 @@ built-in `/resume` picker: type `Codex` to filter (imported chats are titled
 ## Installer details
 
 The installer:
-- clones the repo into `~/.local/share/codex-resume` and links `~/.local/bin/codex-resume`;
-- copies the `/codex-import` slash command to `~/.claude/commands/`;
-- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `codex-resume sync --quiet` at every Claude start. It never delays startup; a sync with nothing new takes about 0.04 s with 150+ chats;
+- clones the repo into `~/.local/share/leftoff` and links `~/.local/bin/leftoff`;
+- copies the `/leftoff` slash command to `~/.claude/commands/`;
+- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start. It never delays startup; a sync with nothing new takes about 0.04 s with 150+ chats;
 - runs the first sync, so chats are in `/resume` right away;
 - installs `fzf` through Homebrew if brew is available (without fzf, chats are picked from a numbered list);
 - adds `~/.local/bin` to PATH in `~/.zshrc` if it isn't there yet.
 
-Install without autosync: `curl -fsSL …/install.sh | zsh -s -- --no-autosync`. Switch it later with `codex-resume autosync on|off`; updates never turn it back on.
+Install without autosync: `curl -fsSL …/install.sh | zsh -s -- --no-autosync`. Switch it later with `leftoff autosync on|off`; updates never turn it back on.
 
-Update: `codex-resume update`, or run the curl line again.
+Update: `leftoff update`, or run the curl line again.
 
 ## Re-importing
 
@@ -102,14 +117,21 @@ updates the same file. If the imported session has already been continued in
 Claude (the file has grown), it is left untouched: a new session is created and
 a warning is printed. `sync` only re-imports a chat when its Codex file has
 changed since the last import, so continuing a chat in Claude never produces
-duplicates by itself. State is kept in `~/.local/state/codex-resume/imports.json`.
+duplicates by itself. State is kept in `~/.local/state/leftoff/imports.json`.
+
+## Upgrading from codex-resume
+
+leftoff was called codex-resume before. `codex-resume update` (or the curl line)
+moves everything over: the clone goes to `~/.local/share/leftoff`, the command
+becomes `leftoff`, `/codex-import` becomes `/leftoff`, the autosync hook and the
+import state are carried over. The old GitHub URL redirects to the new one.
 
 ## Uninstall
 
 ```sh
-codex-resume autosync off
-rm ~/.local/bin/codex-resume ~/.claude/commands/codex-import.md
-rm -rf ~/.local/state/codex-resume ~/.local/share/codex-resume
+leftoff autosync off
+rm ~/.local/bin/leftoff ~/.claude/commands/leftoff.md
+rm -rf ~/.local/state/leftoff ~/.local/share/leftoff
 ```
 
 ## Tests
