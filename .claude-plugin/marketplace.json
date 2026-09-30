@@ -1,0 +1,14 @@
+{
+  "name": "leftoff",
+  "description": "leftoff: ChatGPT Work and Codex chats in Claude Code",
+  "owner": {
+    "name": "ostiums"
+  },
+  "plugins": [
+    {
+      "name": "leftoff",
+      "source": "./",
+      "description": "Your ChatGPT Work and Codex chats in Claude Code's /resume list, synced at every session start"
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# Shell scripts must keep LF on Windows checkouts (core.autocrlf), or sh fails on \r.
+bin/leftoff text eol=lf
+*.sh text eol=lf

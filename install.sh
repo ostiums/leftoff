@@ -60,7 +60,12 @@ rm -f "$commands_dir/codex-import.md"
 chmod +x "$here/leftoff.py" "$here/install.sh"
 mkdir -p "$bin_dir" "$commands_dir"
 ln -sf "$here/leftoff.py" "$link"
-cp "$here/commands/leftoff.md" "$commands_dir/leftoff.md"
+# The leftoff plugin brings its own /leftoff and hook; a copy here would only duplicate them.
+if "$link" autosync status 2>/dev/null | grep -q "leftoff plugin"; then
+  rm -f "$commands_dir/leftoff.md"
+else
+  cp "$here/commands/leftoff.md" "$commands_dir/leftoff.md"
+fi
 
 if ! command -v fzf >/dev/null; then
   if command -v brew >/dev/null; then

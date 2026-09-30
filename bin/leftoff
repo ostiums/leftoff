@@ -1,0 +1,27 @@
+#!/bin/sh
+# Runs leftoff.py with the first Python 3.9+ it finds. The plugin's SessionStart hook calls this
+# file, and Claude Code puts the plugin's bin/ on the Bash tool's PATH, which is how /leftoff
+# finds `leftoff`.
+#
+# On Windows (Git Bash) `python3` is usually the Microsoft Store stub, which exits without running
+# anything, so each candidate is probed first: python3, python, then the py launcher.
+
+self=$0
+if command -v cygpath >/dev/null 2>&1; then
+  self=$(cygpath -u "$self")  # the hook passes C:\…, and dirname needs /c/…
+fi
+root=$(cd "$(dirname "$self")/.." && pwd)
+script=$root/leftoff.py
+if command -v cygpath >/dev/null 2>&1; then
+  script=$(cygpath -w "$script")  # a Windows python.exe reads /c/… as a folder on the current drive
+fi
+export PYTHONUTF8=1
+
+for py in python3 python "py -3"; do
+  # $py is left unquoted so that "py -3" splits into the command and its flag.
+  if $py -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+    exec $py "$script" "$@"
+  fi
+done
+echo "leftoff: Python 3.9 or newer not found (tried python3, python, py -3)" >&2
+exit 1

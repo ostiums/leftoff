@@ -17,6 +17,25 @@ leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the
 
 ## Install
 
+In Claude Code:
+
+```
+/plugin marketplace add ostiums/leftoff
+/plugin install leftoff@leftoff
+```
+
+Then run `/leftoff` to import the chats you already have (if the install summary asks for it, run `/reload-plugins` first). From then on the plugin syncs new chats every time Claude Code starts. It works the same on macOS, Linux and Windows. What the hook runs and why is explained [below](#the-sync-hook).
+
+Installed leftoff with the curl line before? Run `leftoff update` after installing the plugin. The installer then removes its own hook and `/leftoff`, which the plugin replaces, and keeps the terminal command.
+
+On Windows the plugin needs Git for Windows, because Claude Code runs plugin hooks in Git Bash. Without it, use the Windows installer below, which does everything the plugin does.
+
+Claude Code's built-in `/import codex` brings over Codex configuration (MCP servers, AGENTS.md). leftoff brings over the chats.
+
+### The `leftoff` command in the terminal
+
+Optional: a picker over the chats that ran in the current folder, which opens the chosen one in Claude. It's handy when you're not in Claude yet. The installer adds it:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ostiums/leftoff/main/install.sh | zsh
 ```
@@ -27,15 +46,19 @@ On Windows, in PowerShell:
 irm https://raw.githubusercontent.com/ostiums/leftoff/main/install.ps1 | iex
 ```
 
-That's all. The installer imports your existing chats and turns on the sync hook, so the next `/resume` already shows them. What the hook runs and why is explained [below](#the-hook-in-claude-code-settings).
+Next to the plugin the installer adds only this command. Without the plugin it also adds `/leftoff` and the sync hook, so it works as a complete install on its own (see [Installer details](#installer-details)).
 
-Claude Code's built-in `/import codex` brings over Codex configuration (MCP servers, AGENTS.md). leftoff brings over the chats.
+## The sync hook
 
-There is also a `leftoff` command for the terminal: a picker over the chats that ran in the current folder, which opens the chosen one in Claude. It's handy when you're not in Claude yet, and optional.
+The plugin brings one `SessionStart` hook (`hooks/hooks.json`):
 
-## The hook in Claude Code settings
+```json
+{ "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/leftoff\" sync --quiet", "async": true }
+```
 
-The installer adds one entry to `~/.claude/settings.json`:
+`bin/leftoff` is a short `sh` script that finds Python 3.9 or newer (`python3`, `python`, then `py -3` on Windows, skipping the Microsoft Store stub) and runs `leftoff.py`.
+
+Without the plugin, the installer adds the same hook to `~/.claude/settings.json` instead:
 
 ```json
 "hooks": {
@@ -45,7 +68,7 @@ The installer adds one entry to `~/.claude/settings.json`:
 }
 ```
 
-Claude Code runs this command every time a session starts, in any folder, including chats you open in parallel.
+Claude Code runs the hook every time a session starts, in any folder, including chats you open in parallel.
 
 On Windows the entry is `{ "type": "command", "command": "& 'C:\\Users\\you\\.local\\bin\\leftoff.cmd' sync --quiet", "shell": "powershell", "async": true }`. The `shell` field makes Claude Code run it in PowerShell, so it works with or without Git Bash.
 
@@ -54,11 +77,11 @@ On Windows the entry is `{ "type": "command", "command": "& 'C:\\Users\\you\\.lo
 **What it does and doesn't do.**
 - Reads `~/.codex/sessions` and never changes anything there.
 - Writes one Claude session file per Codex chat to `~/.claude/projects/<folder>/`, plus its own state in `~/.local/state/leftoff/`. No other files. A chat you've already continued in Claude is never overwritten.
-- Makes no network requests. The hook runs the copy of leftoff already on your disk and never downloads or updates it. The code changes only when you run `leftoff update`.
+- Makes no network requests. The hook runs the copy of leftoff already on your disk and never downloads or updates it. The code changes only when you update it: in `/plugin` for the plugin, or with `leftoff update` for the installer.
 - Doesn't slow Claude down. `async: true` means Claude Code starts without waiting for it, and with nothing new it finishes in about 0.04 s.
 - Runs once when several sessions start together. The first sync takes a lock, the others see it and exit right away, so two syncs never write the same files.
 
-**Checking it and turning it off.** The hook runs `leftoff.py` from `~/.local/share/leftoff`, a single Python file that uses only the standard library, so you can read all of it. `leftoff autosync off` removes the entry and keeps your other settings and hooks. `leftoff autosync on` puts it back. To install without it, end the install command with `| zsh -s -- --no-autosync`, or on Windows run `iex "& {$(irm https://raw.githubusercontent.com/ostiums/leftoff/main/install.ps1)} -NoAutosync"`. leftoff refuses to write `settings.json` if it can't parse the file.
+**Checking it and turning it off.** The hook runs `leftoff.py`, a single Python file that uses only the standard library, so you can read all of it. The plugin keeps its copy in `~/.claude/plugins/cache/leftoff/`, the installer in `~/.local/share/leftoff`. With the plugin, turn the hook off by disabling leftoff in `/plugin`. With the installer, `leftoff autosync off` removes the entry and keeps your other settings and hooks, and `leftoff autosync on` puts it back. To install without it, end the install command with `| zsh -s -- --no-autosync`, or on Windows run `iex "& {$(irm https://raw.githubusercontent.com/ostiums/leftoff/main/install.ps1)} -NoAutosync"`. leftoff refuses to write `settings.json` if it can't parse the file.
 
 ## Where chats come from
 
@@ -71,7 +94,7 @@ All three write the same session files to `~/.codex/sessions`, so leftoff reads 
 | Codex CLI | `codex` in the terminal, including `codex exec` |
 | Codex IDE | Codex extension in VS Code or JetBrains |
 
-Requirements: macOS or Linux with zsh, or Windows 10/11 with PowerShell. Also `git`, Python 3.9 or newer, Codex and Claude Code. No other dependencies. `fzf` is installed through Homebrew when brew is present, or through winget on Windows.
+Requirements: Python 3.9 or newer, Codex and Claude Code, on macOS, Linux or Windows 10/11. The plugin on Windows also needs Git for Windows. The terminal installer needs `git`, plus zsh on macOS and Linux or PowerShell on Windows. No other dependencies. `fzf` is installed through Homebrew when brew is present, or through winget on Windows.
 
 ## What gets carried over
 
@@ -145,7 +168,7 @@ are titled `⬡ Codex: <title>` or `⬡ ChatGPT: <title>`), `Ctrl+A` shows chats
 The installer:
 - clones the repo into `~/.local/share/leftoff` and links `~/.local/bin/leftoff`
 - copies the `/leftoff` slash command to `~/.claude/commands/`
-- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start (see [The hook in Claude Code settings](#the-hook-in-claude-code-settings))
+- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start (see [The sync hook](#the-sync-hook))
 - runs the first sync, so chats are in `/resume` right away
 - installs `fzf` through Homebrew if brew is available (without fzf, chats are picked from a numbered list)
 - adds `~/.local/bin` to PATH in `~/.zshrc` if it isn't there yet.
@@ -154,10 +177,12 @@ Install without autosync: `curl -fsSL …/install.sh | zsh -s -- --no-autosync`.
 
 Update: `leftoff update`, or run the curl line again.
 
+If the leftoff plugin is on, the installer only adds the terminal command: it doesn't copy `/leftoff` and doesn't add the hook, because the plugin has both. Moving from an installer-only setup to the plugin: install the plugin, then run `leftoff update`. The installer sees the plugin and removes its own hook and `/leftoff`, and the terminal command stays.
+
 On Windows, `install.ps1` does the same with these differences:
 - the clone goes to `~\.local\share\leftoff` as well, and `~\.local\bin` gets two small launchers instead of a link: `leftoff.cmd` for PowerShell and cmd, and `leftoff` for Git Bash
 - it looks for Python as `py -3`, `python` or `python3` and writes its full path into the launchers and the hook, so after moving to another Python, run the install line again
-- the hook runs in PowerShell (see [above](#the-hook-in-claude-code-settings))
+- the hook runs in PowerShell (see [The sync hook](#the-sync-hook))
 - `fzf` comes from winget, and `~\.local\bin` is added to your user PATH instead of `~/.zshrc`.
 
 ## Re-importing
@@ -177,6 +202,17 @@ becomes `leftoff`, `/codex-import` becomes `/leftoff`, the autosync hook and the
 import state are carried over. The old GitHub URL redirects to the new one.
 
 ## Uninstall
+
+The plugin, in Claude Code:
+
+```
+/plugin uninstall leftoff@leftoff
+/plugin marketplace remove leftoff
+```
+
+Imported chats stay in `/resume`. The import state is in `~/.local/state/leftoff`, delete it too if you're not keeping the terminal command.
+
+The installer version:
 
 ```sh
 leftoff autosync off

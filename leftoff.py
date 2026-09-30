@@ -10,17 +10,24 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
-import fcntl
 import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 import uuid
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+WINDOWS = os.name == "nt"
+if WINDOWS:
+    import msvcrt
+else:
+    import fcntl
 
 NAMESPACE = uuid.UUID("6f1c2b1e-3c1a-4d7e-9a57-2f0c0de5e5a1")
 TOOL_INPUT_LIMIT = 1000
@@ -98,8 +105,16 @@ def atomic_write(path: Path, text: str) -> None:
     # A temp name of its own, so two writers never share (and steal) one temp file.
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:  # LF on Windows too
+            f.write(text)
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:  # Windows: the target is open in another process for a moment
+                if not WINDOWS or attempt == 9:
+                    raise
+                time.sleep(0.05)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -289,6 +304,13 @@ def _session_files(codex_home: Path) -> list[Path]:
             + sorted((codex_home / "archived_sessions").glob("rollout-*.jsonl")))
 
 
+def _plain_path(path: str) -> str:
+    r"""Drop a Windows `\\?\` long-path prefix: Claude Code names its project folders after the plain path."""
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    return path[4:] if path.startswith("\\\\?\\") else path
+
+
 def _read_session(path: Path, titles: dict, origin: dict) -> SessionInfo | None:
     records, _ = load_jsonl(path)
     meta = next((r.get("payload") for r in records if r.get("type") == "session_meta"), None)
@@ -301,7 +323,7 @@ def _read_session(path: Path, titles: dict, origin: dict) -> SessionInfo | None:
     user_texts = [i.text for i in extract_items(records) if i.role == "user"]
     title = titles.get(sid) or origin.get(sid) or (user_texts[0] if user_texts else "") or "(untitled)"
     return SessionInfo(
-        id=sid, path=path, cwd=(turn_cwds[-1] if turn_cwds else meta.get("cwd")) or str(Path.home()),
+        id=sid, path=path, cwd=_plain_path((turn_cwds[-1] if turn_cwds else meta.get("cwd")) or str(Path.home())),
         started=meta.get("timestamp") or "", updated=path.stat().st_mtime,
         title=one_line(title), user_turns=len(user_texts), from_claude=sid in origin,
         is_chat=not is_subagent(meta) and bool(user_texts), source=source_of(meta),
@@ -439,13 +461,22 @@ class SyncResult:
 def sync_lock(state_path: Path):
     """Yield True if this process got the sync lock, False if another sync holds it."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(state_path.with_name(state_path.name + ".lock"), "w") as f:
+    with open(state_path.with_name(state_path.name + ".lock"), "a") as f:
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if WINDOWS:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:  # BlockingIOError from flock, PermissionError from msvcrt
             yield False
             return
-        yield True  # released when the file is closed
+        try:
+            yield True
+        finally:
+            if WINDOWS:  # flock goes away with the file; a Windows byte lock is released explicitly
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def sync(codex_home: Path, claude_dir: Path, state_path: Path, get_version) -> SyncResult:
@@ -481,8 +512,9 @@ def _sync(codex_home: Path, claude_dir: Path, state_path: Path, get_version) -> 
     return SyncResult(imported, unchanged)
 
 
-AUTOSYNC_MARK = "leftoff sync"
-LEGACY_AUTOSYNC_MARK = "codex-resume sync"  # hook written before the rename; replaced on the next `autosync on`
+# Our hook's command, however the program path is quoted: `leftoff sync`, `'…/leftoff.cmd' sync`,
+# `'…/leftoff.py' sync`; codex-resume is the name before the rename (replaced on the next `autosync on`).
+AUTOSYNC_COMMAND = re.compile(r"""(?:leftoff|codex-resume)(?:\.py|\.cmd)?['"]? sync\b""")
 
 
 def _load_settings(path: Path) -> dict:
@@ -500,8 +532,17 @@ def _load_settings(path: Path) -> dict:
 
 def _is_autosync_entry(entry) -> bool:
     return isinstance(entry, dict) and any(
-        isinstance(h, dict) and any(m in str(h.get("command", "")) for m in (AUTOSYNC_MARK, LEGACY_AUTOSYNC_MARK))
+        isinstance(h, dict) and AUTOSYNC_COMMAND.search(str(h.get("command", "")))
         for h in entry.get("hooks") or [])
+
+
+PLUGIN_ID = "leftoff@leftoff"  # plugin@marketplace, as /plugin installs it from this repo
+
+
+def plugin_enabled(settings_path: Path) -> bool:
+    """True if the leftoff Claude Code plugin is on; its own hook then does the syncing."""
+    plugins = _load_settings(settings_path).get("enabledPlugins")
+    return isinstance(plugins, dict) and plugins.get(PLUGIN_ID) is True
 
 
 def autosync_enabled(settings_path: Path) -> bool:
@@ -509,13 +550,16 @@ def autosync_enabled(settings_path: Path) -> bool:
     return any(_is_autosync_entry(e) for e in entries)
 
 
-def set_autosync(settings_path: Path, on: bool, command: str) -> bool:
+def set_autosync(settings_path: Path, on: bool, command: str, shell: str | None = None) -> bool:
     """Add or remove the async SessionStart hook that runs `sync`. Returns True if settings changed."""
     data = _load_settings(settings_path)
     hooks = data.get("hooks", {})
     entries = hooks.get("SessionStart", [])
     others = [e for e in entries if not _is_autosync_entry(e)]
-    ours = {"hooks": [{"type": "command", "command": command, "async": True}]}
+    hook = {"type": "command", "command": command, "async": True}
+    if shell:
+        hook["shell"] = shell
+    ours = {"hooks": [hook]}
     if (on and entries == others + [ours]) or (not on and others == entries):
         return False
     if on:
@@ -561,15 +605,21 @@ def _state_path() -> Path:
 
 def _claude_version() -> str:
     try:
-        out = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=15).stdout.split()
+        claude = shutil.which("claude") or "claude"  # which() also finds the npm claude.cmd on Windows
+        out = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=15).stdout.split()
     except (OSError, subprocess.SubprocessError):
         out = []
     return out[0] if out else "2.1.0"
 
 
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(a) == os.path.normcase(b)  # case-insensitive on Windows
+
+
 def _short_cwd(cwd: str) -> str:
     home = str(Path.home())
-    return "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + "/") else cwd
+    under = _same_path(cwd, home) or os.path.normcase(cwd).startswith(os.path.normcase(home) + os.sep)
+    return "~" + cwd[len(home):] if under else cwd
 
 
 def _shell_path(path: str) -> str:
@@ -582,8 +632,18 @@ def _shell_path(path: str) -> str:
     return shlex.quote(path)
 
 
+def _ps_quote(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def resume_command(cwd: str, session_id: str) -> str:
+    if WINDOWS:  # PowerShell; Windows PowerShell 5.1 has no `&&`
+        return f"cd {_ps_quote(cwd)}; claude --resume {session_id}"
+    return f"cd {_shell_path(cwd)} && claude --resume {session_id}"
+
+
 def _dir_name(cwd: str) -> str:
-    if cwd == str(Path.home()):
+    if _same_path(cwd, str(Path.home())):
         return "~"
     return Path(cwd).name or cwd
 
@@ -621,7 +681,7 @@ def fzf_args(scope: str, preview_cmd: str) -> list[str]:
 
 def in_dir(sessions: list[SessionInfo], cwd: str) -> list[SessionInfo]:
     here = os.path.realpath(cwd)
-    return [s for s in sessions if os.path.realpath(s.cwd) == here]
+    return [s for s in sessions if _same_path(os.path.realpath(s.cwd), here)]
 
 
 def _chats(global_: bool) -> list[SessionInfo]:
@@ -636,11 +696,17 @@ def _empty_hint(global_: bool) -> str:
     return f"No ChatGPT Work or Codex chats in this folder ({_short_cwd(os.getcwd())}). All chats: leftoff global"
 
 
+def preview_command(python: str, script: str) -> str:
+    if WINDOWS:  # fzf runs it with cmd.exe, or with bash under Git Bash: double quotes and / suit both
+        return " ".join('"' + p.replace("\\", "/") + '"' for p in (python, script)) + " preview"
+    return f"{shlex.quote(python)} {shlex.quote(script)} preview"
+
+
 def pick(sessions: list[SessionInfo], scope: str) -> SessionInfo | None:
     if shutil.which("fzf"):
-        preview_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.realpath(__file__))} preview"
+        preview_cmd = preview_command(sys.executable, os.path.realpath(__file__))
         proc = subprocess.run(fzf_args(scope, preview_cmd), input="\n".join(rows(sessions, color=True)),
-                              stdout=subprocess.PIPE, text=True)
+                              stdout=subprocess.PIPE, text=True, encoding="utf-8")
         if proc.returncode != 0 or not proc.stdout.strip():
             return None
         chosen_id = proc.stdout.strip().split("\t")[-1]
@@ -681,25 +747,70 @@ def _do_import(s: SessionInfo) -> ImportResult:
     print(f"Imported: {s.title} ({res.turns} turns)")
     print(f"Claude session: {res.session_id}")
     print(f"File: {_short_cwd(str(res.path))}")
-    print(f"Continue: cd {_shell_path(res.cwd)} && claude --resume {res.session_id}")
+    print(f"Continue: {resume_command(res.cwd, res.session_id)}")
     return res
 
 
+def open_in_claude(cwd: str, session_id: str) -> int:
+    os.chdir(cwd)
+    if not WINDOWS:
+        os.execvp("claude", ["claude", "--resume", session_id])
+    # Windows has no real exec: os.execvp starts claude and exits, and the shell then reads the
+    # same console as claude. So wait for it instead, and leave Ctrl+C to claude.
+    claude = shutil.which("claude")
+    if claude is None:
+        print("claude not found in PATH", file=sys.stderr)
+        return 127
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    return subprocess.run([claude, "--resume", session_id]).returncode
+
+
 def _hook_command() -> str:
+    if WINDOWS:
+        shim = Path.home() / ".local/bin/leftoff.cmd"
+        parts = [shim] if shim.exists() else [Path(sys.executable), Path(os.path.realpath(__file__))]
+        return "& " + " ".join(_ps_quote(str(p)) for p in parts) + " sync --quiet"
     link = Path.home() / ".local/bin/leftoff"
     exe = link if link.exists() else Path(os.path.realpath(__file__))
     return f"{shlex.quote(str(exe))} sync --quiet"
 
 
+def _installer(repo: Path) -> list[str]:
+    if WINDOWS:
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(repo / "install.ps1")]
+    return [str(repo / "install.sh")]
+
+
+def _color_ok(stream) -> bool:
+    """ANSI colors on a terminal; on Windows only once the console accepts escape sequences."""
+    if not stream.isatty():
+        return False
+    if not WINDOWS:
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle, mode = kernel32.GetStdHandle(-11), ctypes.c_uint32()  # STD_OUTPUT_HANDLE
+        return bool(kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+                    and kernel32.SetConsoleMode(handle, mode.value | 0x4))  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except (AttributeError, OSError):
+        return False
+
+
 def update(repo: Path) -> int:
     """git pull the tool's own checkout and re-run its installer."""
+    plugins = Path(os.path.realpath(_claude_dir() / "plugins"))
+    if plugins == repo or plugins in repo.parents:
+        print(f"This copy of leftoff belongs to the Claude Code plugin: update it in /plugin "
+              f"or with `claude plugin update {PLUGIN_ID}`", file=sys.stderr)
+        return 1
     if not (repo / ".git").exists():
         print(f"{repo} is not a git repository, can't update via git", file=sys.stderr)
         return 1
     if subprocess.run(["git", "-C", str(repo), "pull", "--ff-only", "-q"]).returncode != 0:
         print("git pull failed", file=sys.stderr)
         return 1
-    return subprocess.run([str(repo / "install.sh")]).returncode
+    return subprocess.run(_installer(repo)).returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -720,12 +831,16 @@ def main(argv: list[str] | None = None) -> int:
                     argparse.SUPPRESS).add_argument("id", nargs="?")
     sub.add_parser("global", help="pick a chat from all folders and open in claude").add_argument("id", nargs="?")
     sub.add_parser("preview", help="show the beginning of a chat").add_argument("id")
-    sub.add_parser("update", help="update leftoff (git pull + install.sh)")
+    sub.add_parser("update", help="update leftoff (git pull + the installer)")
     sub.add_parser("autosync", help="sync chats in the background at every Claude start").add_argument(
         "state", nargs="?", choices=["on", "off", "status"], default="status")
     sub.add_parser("sync", help="import all new and changed chats (for /resume)").add_argument(
         "--quiet", action="store_true")
     args = parser.parse_args(argv)
+    if WINDOWS:  # through a pipe (fzf preview, /leftoff) Python would write the ANSI code page
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
 
     try:
         if args.cmd == "list":
@@ -739,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                                    "source": s.source}
                                   for s in sessions], ensure_ascii=False, indent=1))
             else:
-                for line in rows(sessions, color=sys.stdout.isatty()):
+                for line in rows(sessions, color=_color_ok(sys.stdout)):
                     print(line)
             return 0
         if args.cmd == "sync":
@@ -749,13 +864,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "autosync":
             settings = _claude_dir() / "settings.json"
+            plugin = plugin_enabled(settings)
             if args.state != "status":
-                set_autosync(settings, args.state == "on", _hook_command())
+                # On Windows hooks otherwise run in Git Bash, which may not be installed.
+                shell = "powershell" if WINDOWS else None
+                # With the plugin on, a hook in settings.json would only run a second sync.
+                set_autosync(settings, args.state == "on" and not plugin, _hook_command(), shell)
                 if args.state == "on":
                     res = sync(_codex_home(), _claude_dir(), _state_path(), _claude_version)
                     print(f"First sync: imported {res.imported}")
-            enabled = autosync_enabled(settings)
-            print(f"Autosync is {'on' if enabled else 'off'} ({settings})")
+            if plugin:
+                print("Autosync is on: the leftoff plugin syncs at every Claude start (turn it off in /plugin)")
+                if autosync_enabled(settings):
+                    print(f"The installer's hook is still in {settings} and runs a second sync: "
+                          "`leftoff autosync on` removes it")
+            else:
+                print(f"Autosync is {'on' if autosync_enabled(settings) else 'off'} ({settings})")
             return 0
         if args.cmd == "update":
             return update(Path(os.path.realpath(__file__)).parent)
@@ -779,8 +903,7 @@ def main(argv: list[str] | None = None) -> int:
         if chosen is None:
             return 130
         res = _do_import(chosen)
-        os.chdir(res.cwd)
-        os.execvp("claude", ["claude", "--resume", res.session_id])
+        return open_in_claude(res.cwd, res.session_id)
     except LookupError as e:
         print(e, file=sys.stderr)
         return 2

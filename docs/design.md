@@ -163,8 +163,8 @@ recalls the imported content.
 
 ## Interface
 
-Single file `leftoff.py` (stdlib only, Python ≥ 3.9), symlinked as
-`~/.local/bin/leftoff`.
+Single file `leftoff.py` (stdlib only, Python ≥ 3.9). The installer symlinks it as
+`~/.local/bin/leftoff` (launchers on Windows, see below). In the plugin, `bin/leftoff` runs it.
 
 Scope: by default `list` and the picker show only chats whose recorded cwd
 equals the current directory (both `realpath`-resolved). `leftoff global`
@@ -180,7 +180,7 @@ leftoff list [--json]   # chats, newest first
 leftoff import <id>     # convert; print session id, path, resume command
 leftoff resume [<id>]   # import, then chdir(cwd) and exec `claude --resume <sid>`
 leftoff preview <id>    # first ~15 turns as plain text (fzf preview)
-leftoff update          # git pull own checkout + re-run install.sh
+leftoff update          # git pull own checkout + re-run the installer (the plugin: use /plugin)
 ```
 
 `<id>` accepts the full Codex id or any unique substring of it (≥ 6 chars).
@@ -228,7 +228,60 @@ AskUserQuestion is limited to 4 options, so the native picker is used instead.
 slash command into `${CLAUDE_CONFIG_DIR:-~/.claude}/commands/`, `brew install
 fzf` if fzf and brew are available, and add `~/.local/bin` to PATH via
 `~/.zshrc` if missing. `leftoff update` runs `git pull --ff-only` on the
-tool's own checkout and re-runs `install.sh`.
+tool's own checkout and re-runs `install.sh` (`install.ps1` on Windows). With the plugin
+on, the installers add only the terminal command (see below).
+
+## Claude Code plugin
+
+The repo is also a plugin and a one-plugin marketplace (`.claude-plugin/plugin.json`,
+`.claude-plugin/marketplace.json` with `source: "./"`), installed as `leftoff@leftoff`:
+`/plugin marketplace add ostiums/leftoff`, `/plugin install leftoff@leftoff`. The plugin
+root is the repo root, so it carries `leftoff.py` itself.
+
+- `commands/leftoff.md` is picked up as the plugin's `/leftoff` (also `/leftoff:leftoff`).
+  It calls a bare `leftoff`, which resolves to the plugin's `bin/leftoff`: Claude Code puts a
+  plugin's `bin/` on the Bash tool's PATH.
+- `hooks/hooks.json` runs `sh "${CLAUDE_PLUGIN_ROOT}/bin/leftoff" sync --quiet`, async, at
+  every `SessionStart`. Shell-form hooks run in `sh -c` on macOS/Linux and in Git Bash on
+  Windows, so the plugin needs Git for Windows there (the same assumption as Anthropic's
+  Python-based plugins). Exec form was ruled out: on Windows it needs a real `.exe`, and
+  there is no Python command name that exists on every OS.
+- `bin/leftoff` (POSIX sh, LF-only via `.gitattributes`) probes `python3`, `python`,
+  `py -3` for 3.9+ and execs the first that works. The probe skips the Microsoft Store
+  `python3` stub. Under Git Bash the script path goes through `cygpath -w`.
+- `version` in `plugin.json` is explicit, so users get an update only when it is bumped.
+- The plugin is detected through `enabledPlugins["leftoff@leftoff"]` in the user
+  `settings.json`. Then `autosync` reports the plugin's hook and never writes its own
+  (`autosync on` removes one left by the installer), the installers skip `/leftoff` in
+  `~/.claude/commands`, and `leftoff update` in the plugin's cache points to `/plugin`.
+  While the installer's hook is still there next to the plugin, `autosync status` says so
+  (and `/leftoff` passes that on). Only the user `settings.json` is checked: a plugin
+  installed at project or local scope isn't detected, and the installer's hook then runs a
+  second sync in those projects (harmless, the lock turns it into a no-op).
+
+## Windows
+
+Same layout under `%USERPROFILE%` (`~\.codex`, `~\.claude`, `~\.local\…`). What differs:
+
+- `install.ps1` (run with `irm … | iex`) writes two launchers into `~\.local\bin` instead of
+  a symlink: `leftoff.cmd` (PowerShell, cmd) and an extensionless `sh` script (Git Bash, which
+  Claude Code uses for `!` commands when Git for Windows is installed). Both call the Python
+  found at install time by its full path. `~\.local\bin` goes into the user PATH (registry,
+  raw value, so `%VAR%` entries stay unexpanded).
+- The autosync hook is `& '<home>\.local\bin\leftoff.cmd' sync --quiet` with
+  `"shell": "powershell"`, so it runs without Git Bash. The hook is recognized by the regex
+  `AUTOSYNC_COMMAND`, which also matches quoted program paths.
+- `/leftoff` allows both `Bash(leftoff *)` and `PowerShell(leftoff *)`.
+- The sync lock is a one-byte `msvcrt.locking` lock instead of `flock`.
+- Opening a chat waits for `claude` (`subprocess.run`, SIGINT ignored) instead of `execvp`,
+  which on Windows starts a child and exits, leaving the shell and claude on one console.
+- stdout and stderr are UTF-8 (fzf preview and `/leftoff` read them through pipes). Files
+  are written with LF. `os.replace` is retried briefly when the target is open elsewhere.
+- Path comparisons use `os.path.normcase`. A `\\?\` prefix on a Codex cwd is dropped.
+  Slugs need no change: `C:\Users\alice\app` → `C--Users-alice-app`, as Claude Code names them.
+- The fzf preview command is `"C:/…/python.exe" "C:/…/leftoff.py" preview {2}`, which both
+  cmd.exe (fzf's default) and bash (when `$SHELL` is set) accept. The resume hint is PowerShell:
+  `cd '<cwd>'; claude --resume <id>`.
 
 ## Testing
 

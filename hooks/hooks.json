@@ -1,0 +1,16 @@
+{
+  "description": "Imports new and changed ChatGPT Work and Codex chats in the background at every session start",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/bin/leftoff\" sync --quiet",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

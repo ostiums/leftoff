@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "leftoff",
+  "version": "0.2.0",
+  "description": "Your ChatGPT Work and Codex chats in Claude Code's /resume list, synced at every session start",
+  "author": {
+    "name": "ostiums"
+  },
+  "homepage": "https://github.com/ostiums/leftoff",
+  "repository": "https://github.com/ostiums/leftoff",
+  "license": "MIT",
+  "keywords": ["codex", "chatgpt", "resume", "sessions", "import"]
+}

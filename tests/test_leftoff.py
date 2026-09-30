@@ -310,6 +310,14 @@ class WriteTests(unittest.TestCase):
                          "-Users-alice-Documents-work-my-app")
         self.assertEqual(cr.project_slug("/Users/alice/Cowork проект"), "-Users-alice-Cowork-------")
 
+    def test_slug_windows_path(self):
+        self.assertEqual(cr.project_slug("C:\\Users\\alice\\my-app"), "C--Users-alice-my-app")
+
+    def test_windows_long_path_prefix_dropped_from_cwd(self):
+        self.assertEqual(cr._plain_path("\\\\?\\C:\\work\\app"), "C:\\work\\app")
+        self.assertEqual(cr._plain_path("\\\\?\\UNC\\srv\\share"), "\\\\srv\\share")
+        self.assertEqual(cr._plain_path("/Users/alice"), "/Users/alice")
+
     def test_assistant_model_is_synthetic(self):
         # Claude Code warns "Session model … could not be restored" on resume for any model id
         # it doesn't know; "<synthetic>" is its own marker for non-model messages and is silent.
@@ -516,6 +524,28 @@ class AutosyncTests(unittest.TestCase):
         [entry] = self.hooks()
         self.assertEqual(entry["hooks"], [{"type": "command", "command": self.CMD, "async": True}])
 
+    WIN_CMD = "& 'C:\\Users\\alice\\.local\\bin\\leftoff.cmd' sync --quiet"
+
+    def test_windows_hook_runs_in_powershell(self):
+        self.assertTrue(cr.set_autosync(self.settings, True, self.WIN_CMD, "powershell"))
+        [entry] = self.hooks()
+        self.assertEqual(entry["hooks"], [{"type": "command", "command": self.WIN_CMD, "async": True,
+                                           "shell": "powershell"}])
+        self.assertTrue(cr.autosync_enabled(self.settings))
+        self.assertFalse(cr.set_autosync(self.settings, True, self.WIN_CMD, "powershell"))
+        self.assertTrue(cr.set_autosync(self.settings, False, self.WIN_CMD, "powershell"))
+        self.assertFalse(cr.autosync_enabled(self.settings))
+
+    def test_quoted_program_path_is_recognized(self):
+        for command in ("'/Users/a b/.local/bin/leftoff' sync --quiet",
+                        "& 'C:\\Python\\python.exe' 'C:\\x\\leftoff.py' sync --quiet"):
+            hook = {"type": "command", "command": command, "async": True}
+            self.settings.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [hook]}]}}))
+            self.assertTrue(cr.autosync_enabled(self.settings), command)
+        hook = {"type": "command", "command": "leftoff-sync-other", "async": True}
+        self.settings.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [hook]}]}}))
+        self.assertFalse(cr.autosync_enabled(self.settings))
+
     def test_off_removes_legacy_hook(self):
         self.settings.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [self.LEGACY]}]}}))
         self.assertTrue(cr.set_autosync(self.settings, False, self.CMD))
@@ -681,6 +711,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("No ChatGPT Work or Codex chats", err)
 
+    @unittest.skipIf(cr.WINDOWS, "runs install.sh")
     def test_update_pulls_repo_and_reinstalls(self):
         import subprocess
         origin, clone = self.root / "origin", self.root / "clone"
@@ -704,6 +735,49 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(cr.update(self.root / "empty"), 1)
         self.assertIn("git", err.getvalue())
+
+    def enable_plugin(self):
+        settings = self.root / "claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        data = json.loads(settings.read_text()) if settings.exists() else {}
+        data["enabledPlugins"] = {"leftoff@leftoff": True}
+        settings.write_text(json.dumps(data))
+        return settings
+
+    def test_autosync_with_plugin_keeps_settings_hook_away(self):
+        self.run_main("autosync", "on")
+        settings = self.enable_plugin()
+        self.assertTrue(cr.autosync_enabled(settings))
+        code, out, _ = self.run_main("autosync", "on")
+        self.assertEqual(code, 0)
+        self.assertIn("Autosync is on: the leftoff plugin", out)
+        self.assertFalse(cr.autosync_enabled(settings))  # the plugin's own hook is enough
+        self.assertNotIn("installer's hook", out)
+        self.assertEqual(json.loads(settings.read_text())["enabledPlugins"], {"leftoff@leftoff": True})
+        _, out, _ = self.run_main("autosync")
+        self.assertIn("is on", out)
+
+    def test_status_with_plugin_reports_leftover_installer_hook(self):
+        self.run_main("autosync", "on")
+        self.enable_plugin()
+        code, out, _ = self.run_main("autosync")
+        self.assertEqual(code, 0)
+        self.assertIn("the leftoff plugin syncs", out)
+        self.assertIn("The installer's hook is still in", out)
+        self.assertIn("`leftoff autosync on` removes it", out)
+
+    def test_disabled_plugin_does_not_count(self):
+        settings = self.enable_plugin()
+        settings.write_text(json.dumps({"enabledPlugins": {"leftoff@leftoff": False}}))
+        _, out, _ = self.run_main("autosync")
+        self.assertIn("Autosync is off", out)
+
+    def test_update_inside_plugin_points_to_plugin_manager(self):
+        copy = self.root / "claude" / "plugins" / "cache" / "leftoff" / "leftoff" / "0.2.0"
+        copy.mkdir(parents=True)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cr.update(Path(os.path.realpath(copy))), 1)
+        self.assertIn("claude plugin update leftoff@leftoff", err.getvalue())
 
     def test_top_level_global_flag_same_as_global(self):
         os.environ["CODEX_HOME"] = str(self.root / "empty")
@@ -751,6 +825,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("claude --resume", out)
         self.assertEqual(len(list((self.root / "claude" / "projects").glob("*/*.jsonl"))), 1)
 
+    @unittest.skipIf(cr.WINDOWS, "POSIX paths")
     def test_import_output_uses_home_relative_paths(self):
         from unittest import mock
         (self.root / "my proj").mkdir()
@@ -775,6 +850,110 @@ class CliTests(unittest.TestCase):
         self.assertIn("No Codex session", err)
 
 
+REPO = Path(__file__).resolve().parent.parent
+
+
+class PluginTests(unittest.TestCase):
+    """The repo is also a Claude Code plugin and a one-plugin marketplace."""
+
+    def read(self, rel):
+        return json.loads((REPO / rel).read_text(encoding="utf-8"))
+
+    def test_manifest_and_marketplace_agree(self):
+        manifest = self.read(".claude-plugin/plugin.json")
+        [entry] = self.read(".claude-plugin/marketplace.json")["plugins"]
+        self.assertEqual(f"{entry['name']}@{self.read('.claude-plugin/marketplace.json')['name']}", cr.PLUGIN_ID)
+        self.assertEqual(manifest["name"], entry["name"])
+        self.assertEqual(entry["source"], "./")
+        self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
+
+    def test_hook_runs_the_launcher_async(self):
+        [group] = self.read("hooks/hooks.json")["hooks"]["SessionStart"]
+        [hook] = group["hooks"]
+        self.assertTrue(hook["async"])
+        self.assertEqual(hook["command"], 'sh "${CLAUDE_PLUGIN_ROOT}/bin/leftoff" sync --quiet')
+        self.assertTrue(cr.AUTOSYNC_COMMAND.search(hook["command"]))
+        self.assertTrue(os.access(REPO / "bin" / "leftoff", os.X_OK))
+        self.assertIn(b"bin/leftoff text eol=lf", (REPO / ".gitattributes").read_bytes())
+
+    @unittest.skipIf(cr.WINDOWS, "POSIX sh")
+    def test_launcher_skips_a_python3_that_does_not_run(self):
+        import shutil, subprocess
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d)
+            (fake / "python3").write_text("#!/bin/sh\nexit 49\n")  # like the Microsoft Store stub
+            (fake / "python3").chmod(0o755)
+            (fake / "python").symlink_to(sys.executable)
+            (fake / "dirname").symlink_to(shutil.which("dirname"))
+            r = subprocess.run(["/bin/sh", str(REPO / "bin" / "leftoff"), "--help"],
+                               capture_output=True, text=True, env={"PATH": str(fake)})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("usage: leftoff", r.stdout)
+            (fake / "python").unlink()
+            r = subprocess.run(["/bin/sh", str(REPO / "bin" / "leftoff"), "--help"],
+                               capture_output=True, text=True, env={"PATH": str(fake)})
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("Python 3.9 or newer not found", r.stderr)
+
+
+class WindowsTests(unittest.TestCase):
+    """The Windows branches, exercised on any OS by switching cr.WINDOWS."""
+
+    def setUp(self):
+        from unittest import mock
+        patcher = mock.patch.object(cr, "WINDOWS", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_resume_command_is_powershell(self):
+        self.assertEqual(cr.resume_command("C:\\Users\\o'neil\\app", "abc"),
+                         "cd 'C:\\Users\\o''neil\\app'; claude --resume abc")
+
+    def test_preview_command_suits_cmd_and_git_bash(self):
+        self.assertEqual(cr.preview_command("C:\\Python313\\python.exe", "C:\\Users\\a b\\leftoff.py"),
+                         '"C:/Python313/python.exe" "C:/Users/a b/leftoff.py" preview')
+
+    def test_installer_is_powershell(self):
+        cmd = cr._installer(Path("repo"))
+        self.assertEqual(cmd[0], "powershell")
+        self.assertEqual(Path(cmd[-1]), Path("repo") / "install.ps1")
+
+    def test_hook_command_prefers_the_cmd_shim(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as home, mock.patch.object(Path, "home", return_value=Path(home)):
+            fallback = cr._hook_command()
+            self.assertTrue(fallback.startswith("& '"), fallback)
+            self.assertIn("leftoff.py' sync --quiet", fallback)
+            shim = Path(home) / ".local/bin/leftoff.cmd"
+            shim.parent.mkdir(parents=True)
+            shim.touch()
+            self.assertEqual(cr._hook_command(), f"& '{shim}' sync --quiet")
+            self.assertTrue(cr.AUTOSYNC_COMMAND.search(cr._hook_command()))
+
+    def test_open_in_claude_waits_instead_of_exec(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(cr.shutil, "which", return_value="C:\\bin\\claude.exe"), \
+                mock.patch.object(cr.subprocess, "run", return_value=mock.Mock(returncode=3)) as run, \
+                mock.patch.object(cr.signal, "signal") as sig, \
+                mock.patch.object(cr.os, "chdir") as chdir, \
+                mock.patch.object(cr.os, "execvp") as execvp:
+            self.assertEqual(cr.open_in_claude(d, "sid"), 3)
+        chdir.assert_called_once_with(d)
+        run.assert_called_once_with(["C:\\bin\\claude.exe", "--resume", "sid"])
+        sig.assert_called_once_with(cr.signal.SIGINT, cr.signal.SIG_IGN)
+        execvp.assert_not_called()
+
+    def test_open_in_claude_without_claude(self):
+        from unittest import mock
+        err = io.StringIO()
+        with mock.patch.object(cr.shutil, "which", return_value=None), \
+                mock.patch.object(cr.os, "chdir"), contextlib.redirect_stderr(err):
+            self.assertEqual(cr.open_in_claude("C:\\x", "sid"), 127)
+        self.assertIn("claude not found", err.getvalue())
+
+
+@unittest.skipIf(cr.WINDOWS, "install.sh needs zsh")
 class InstallerTests(unittest.TestCase):
     """install.sh run the way users run it: `curl … | zsh` with a throwaway HOME."""
 
@@ -812,7 +991,7 @@ class InstallerTests(unittest.TestCase):
         return json.loads(p.read_text()) if p.exists() else {}
 
     def autosync_on(self):
-        return cr.AUTOSYNC_MARK in json.dumps(self.settings())
+        return bool(cr.AUTOSYNC_COMMAND.search(json.dumps(self.settings())))
 
     def test_piped_install_clones_links_and_enables_autosync(self):
         r = self.pipe_install()
@@ -883,6 +1062,32 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.autosync_on())
         self.assertTrue((self.home / ".local/bin/leftoff").exists())
+
+    def enable_plugin(self):
+        p = self.home / ".claude" / "settings.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = self.settings()
+        data["enabledPlugins"] = {"leftoff@leftoff": True}
+        p.write_text(json.dumps(data))
+
+    def test_with_plugin_installs_only_the_terminal_command(self):
+        self.enable_plugin()
+        r = self.pipe_install()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.home / ".local/bin/leftoff").exists())
+        self.assertFalse((self.home / ".claude/commands/leftoff.md").exists())
+        self.assertFalse(self.autosync_on())
+        self.assertIn("leftoff plugin", r.stdout)
+
+    def test_rerun_after_adding_plugin_removes_own_hook_and_command(self):
+        self.assertEqual(self.pipe_install().returncode, 0)
+        self.assertTrue(self.autosync_on())
+        self.enable_plugin()
+        r = self.pipe_install()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.autosync_on())
+        self.assertFalse((self.home / ".claude/commands/leftoff.md").exists())
+        self.assertEqual(self.settings()["enabledPlugins"], {"leftoff@leftoff": True})
 
 
 if __name__ == "__main__":
