@@ -13,7 +13,7 @@ leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
 ![macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-![leftoff demo: in Claude Code, /resume lists ChatGPT and Codex chats next to a regular Claude chat, a ChatGPT Work chat opens and Claude says where the work stopped, and after /clear, Claude answers a question about an old Codex CLI chat by searching the project's past chats](assets/demo.gif)
+![leftoff demo: in Claude Code, /resume lists ChatGPT and Codex chats next to a regular Claude chat, a ChatGPT Work chat opens and Claude says where the work stopped, and after /clear, asked whether it can read Codex chats now, Claude says it can continue any of them and lists the four chats of the project](assets/demo.gif)
 
 ## Install
 
