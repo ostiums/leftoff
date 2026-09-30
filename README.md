@@ -2,7 +2,7 @@
 
 **Your ChatGPT Work and Codex chats, inside Claude Code.**
 
-leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the **Codex CLI** keep on your Mac into Claude Code's own session store. Install it once, and then:
+leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the **Codex CLI** keep on your computer into Claude Code's own session store. Install it once, and then:
 
 - **`/resume` in Claude Code lists them** next to your Claude chats, as `⬡ ChatGPT: <title>` and `⬡ Codex: <title>`. Open one and continue where you left off, in the folder where it ran, with the whole conversation in place.
 - **Claude can search them.** Ask "how did we fix the flaky auth tests?" and Claude looks through past chats of the project, Codex ones included, because they are ordinary Claude sessions now.
@@ -11,7 +11,7 @@ leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the
 [![License: MIT](https://img.shields.io/github/license/ostiums/leftoff)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ostiums/leftoff)](https://github.com/ostiums/leftoff/releases)
 ![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)
-![macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![macOS | Linux | Windows](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 
 ![leftoff demo: in Claude Code, /resume lists ChatGPT and Codex chats next to a regular Claude chat, a ChatGPT Work chat opens and Claude says where the work stopped, and after /clear, asked whether it can read Codex chats now, Claude says it can continue any of them and lists the four chats of the project](assets/demo.gif)
 
@@ -19,6 +19,12 @@ leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ostiums/leftoff/main/install.sh | zsh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ostiums/leftoff/main/install.ps1 | iex
 ```
 
 That's all. The installer imports your existing chats and turns on the sync hook, so the next `/resume` already shows them. What the hook runs and why is explained [below](#the-hook-in-claude-code-settings).
@@ -41,6 +47,8 @@ The installer adds one entry to `~/.claude/settings.json`:
 
 Claude Code runs this command every time a session starts, in any folder, including chats you open in parallel.
 
+On Windows the entry is `{ "type": "command", "command": "& 'C:\\Users\\you\\.local\\bin\\leftoff.cmd' sync --quiet", "shell": "powershell", "async": true }`. The `shell` field makes Claude Code run it in PowerShell, so it works with or without Git Bash.
+
 **Why it's needed.** `/resume` and Claude's search through past chats only see the session files in `~/.claude/projects`. Claude Code has no way to ask another tool for more chats, so a Codex chat has to be copied there before you go looking for it. Session start is the only moment Claude Code runs something on its own. Without the hook, a chat you had in Codex an hour ago stays out of `/resume` until you run `leftoff sync` or `/leftoff`.
 
 **What it does and doesn't do.**
@@ -50,7 +58,7 @@ Claude Code runs this command every time a session starts, in any folder, includ
 - Doesn't slow Claude down. `async: true` means Claude Code starts without waiting for it, and with nothing new it finishes in about 0.04 s.
 - Runs once when several sessions start together. The first sync takes a lock, the others see it and exit right away, so two syncs never write the same files.
 
-**Checking it and turning it off.** The hook runs `leftoff.py` from `~/.local/share/leftoff`, a single Python file that uses only the standard library, so you can read all of it. `leftoff autosync off` removes the entry and keeps your other settings and hooks. `leftoff autosync on` puts it back. To install without it, end the install command with `| zsh -s -- --no-autosync`. leftoff refuses to write `settings.json` if it can't parse the file.
+**Checking it and turning it off.** The hook runs `leftoff.py` from `~/.local/share/leftoff`, a single Python file that uses only the standard library, so you can read all of it. `leftoff autosync off` removes the entry and keeps your other settings and hooks. `leftoff autosync on` puts it back. To install without it, end the install command with `| zsh -s -- --no-autosync`, or on Windows run `iex "& {$(irm https://raw.githubusercontent.com/ostiums/leftoff/main/install.ps1)} -NoAutosync"`. leftoff refuses to write `settings.json` if it can't parse the file.
 
 ## Where chats come from
 
@@ -63,7 +71,7 @@ All three write the same session files to `~/.codex/sessions`, so leftoff reads 
 | Codex CLI | `codex` in the terminal, including `codex exec` |
 | Codex IDE | Codex extension in VS Code or JetBrains |
 
-Requirements: macOS or Linux with zsh, `git`, `python3` 3.9 or newer, Codex and Claude Code. No other dependencies. `fzf` is installed through Homebrew when brew is present.
+Requirements: macOS or Linux with zsh, or Windows 10/11 with PowerShell. Also `git`, Python 3.9 or newer, Codex and Claude Code. No other dependencies. `fzf` is installed through Homebrew when brew is present, or through winget on Windows.
 
 ## What gets carried over
 
@@ -76,17 +84,20 @@ Left out: Codex system prompts, `<environment_context>` and AGENTS.md inserts, d
 
 ## Compared with other tools
 
-Measured on 2026-09-23 with one real Codex Desktop 0.155 chat: 113 tool calls, one context compaction, 43 assistant replies.
+Measured on 2026-09-23 with two real Codex Desktop 0.155 chats, a short one and a long one. Each converted chat was opened in Claude Code, and Claude was asked what the chat was about. The table shows the long chat: 113 tool calls, one context compaction, 43 assistant replies.
 
 | Tool | What Claude gets | History carried | Codex system text in the history | Title in `/resume` |
 |---|---|---|---|---|
 | **leftoff** | native session | all 43 replies, tool calls as compact text: 189k characters | filtered out | `⬡ Codex: <title>` |
-| [transession](https://github.com/inmzhang/transession) 0.2.0 | native session | all replies with full tool output and images: 2.6M characters, about 180k tokens on the first prompt | kept, replayed as user messages | first message, which is Codex system text |
+| [transession](https://github.com/inmzhang/transession) 0.2.0 | native session | all replies with full tool output and images: 2.6M characters, about 180k tokens on the first prompt, and one reply on Haiku cost $0.53 | kept, replayed as user messages | first message, which is Codex system text |
 | [codex2claude](https://github.com/MisterBrookT/codex2claude) | native session (runs transession, then cleans up) | full history, 5.8 MB session file | partly filtered | first message |
 | [cli-continues](https://github.com/yigitkonur/cli-continues) 4.1.1 | a summary prompt in a new session | last 10 messages (50 with `--preset full`), and replies from before the compaction are lost in the default preset | partly filtered | none |
 | [authsec-bridge](https://github.com/authsec-ai/authsec-bridge) | native session | replies kept, 0 of 113 tool calls | kept | none |
+| [resume-cli](https://github.com/danishaft/resume-cli-) | a summary prompt in a new session | nothing: it can't read the Codex Desktop format, and Claude answered that it had no context | not applicable | not applicable |
 
 Where the others do more: cli-continues moves sessions between 16 coding agents, and transession converts in both directions and keeps complete tool output.
+
+Two leftoff features come from this comparison. Images you attached in Codex are passed to Claude as real images, the way transession does it. The folder a chat opens in is taken from its latest `turn_context`, as in [PavelCz's fork of cli-continues](https://github.com/PavelCz/cli-continues), so a chat that moved to another folder opens where it ended.
 
 ## Usage
 
@@ -143,6 +154,12 @@ Install without autosync: `curl -fsSL …/install.sh | zsh -s -- --no-autosync`.
 
 Update: `leftoff update`, or run the curl line again.
 
+On Windows, `install.ps1` does the same with these differences:
+- the clone goes to `~\.local\share\leftoff` as well, and `~\.local\bin` gets two small launchers instead of a link: `leftoff.cmd` for PowerShell and cmd, and `leftoff` for Git Bash
+- it looks for Python as `py -3`, `python` or `python3` and writes its full path into the launchers and the hook, so after moving to another Python, run the install line again
+- the hook runs in PowerShell (see [above](#the-hook-in-claude-code-settings))
+- `fzf` comes from winget, and `~\.local\bin` is added to your user PATH instead of `~/.zshrc`.
+
 ## Re-importing
 
 The Claude session id is derived from the Codex session id, so re-importing
@@ -165,6 +182,14 @@ import state are carried over. The old GitHub URL redirects to the new one.
 leftoff autosync off
 rm ~/.local/bin/leftoff ~/.claude/commands/leftoff.md
 rm -rf ~/.local/state/leftoff ~/.local/share/leftoff
+```
+
+On Windows, in PowerShell:
+
+```powershell
+leftoff autosync off
+Remove-Item ~\.local\bin\leftoff, ~\.local\bin\leftoff.cmd, ~\.claude\commands\leftoff.md
+Remove-Item -Recurse -Force ~\.local\state\leftoff, ~\.local\share\leftoff
 ```
 
 ## Tests
