@@ -21,11 +21,36 @@ leftoff copies the chats that ChatGPT's **Work mode**, the **Codex App** and the
 curl -fsSL https://raw.githubusercontent.com/ostiums/leftoff/main/install.sh | zsh
 ```
 
-That's all. The installer imports your existing chats and turns on the sync hook, so the next `/resume` already shows them.
+That's all. The installer imports your existing chats and turns on the sync hook, so the next `/resume` already shows them. What the hook runs and why is explained [below](#the-hook-in-claude-code-settings).
 
 Claude Code's built-in `/import codex` brings over Codex configuration (MCP servers, AGENTS.md). leftoff brings over the chats.
 
 There is also a `leftoff` command for the terminal: a picker over the chats that ran in the current folder, which opens the chosen one in Claude. It's handy when you're not in Claude yet, and optional.
+
+## The hook in Claude Code settings
+
+The installer adds one entry to `~/.claude/settings.json`:
+
+```json
+"hooks": {
+  "SessionStart": [
+    { "hooks": [{ "type": "command", "command": "/Users/you/.local/bin/leftoff sync --quiet", "async": true }] }
+  ]
+}
+```
+
+Claude Code runs this command every time a session starts, in any folder, including chats you open in parallel.
+
+**Why it's needed.** `/resume` and Claude's search through past chats only see the session files in `~/.claude/projects`. Claude Code has no way to ask another tool for more chats, so a Codex chat has to be copied there before you go looking for it. Session start is the only moment Claude Code runs something on its own. Without the hook, a chat you had in Codex an hour ago stays out of `/resume` until you run `leftoff sync` or `/leftoff`.
+
+**What it does and doesn't do.**
+- Reads `~/.codex/sessions` and never changes anything there.
+- Writes one Claude session file per Codex chat to `~/.claude/projects/<folder>/`, plus its own state in `~/.local/state/leftoff/`. No other files. A chat you've already continued in Claude is never overwritten.
+- Makes no network requests. The hook runs the copy of leftoff already on your disk and never downloads or updates it. The code changes only when you run `leftoff update`.
+- Doesn't slow Claude down. `async: true` means Claude Code starts without waiting for it, and with nothing new it finishes in about 0.04 s.
+- Runs once when several sessions start together. The first sync takes a lock, the others see it and exit right away, so two syncs never write the same files.
+
+**Checking it and turning it off.** The hook runs `leftoff.py` from `~/.local/share/leftoff`, a single Python file that uses only the standard library, so you can read all of it. `leftoff autosync off` removes the entry and keeps your other settings and hooks. `leftoff autosync on` puts it back. To install without it, end the install command with `| zsh -s -- --no-autosync`. leftoff refuses to write `settings.json` if it can't parse the file.
 
 ## Where chats come from
 
@@ -109,7 +134,7 @@ are titled `⬡ Codex: <title>` or `⬡ ChatGPT: <title>`), `Ctrl+A` shows chats
 The installer:
 - clones the repo into `~/.local/share/leftoff` and links `~/.local/bin/leftoff`
 - copies the `/leftoff` slash command to `~/.claude/commands/`
-- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start. It never delays startup, and a sync with nothing new takes about 0.04 s with 150+ chats
+- turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start (see [The hook in Claude Code settings](#the-hook-in-claude-code-settings))
 - runs the first sync, so chats are in `/resume` right away
 - installs `fzf` through Homebrew if brew is available (without fzf, chats are picked from a numbered list)
 - adds `~/.local/bin` to PATH in `~/.zshrc` if it isn't there yet.

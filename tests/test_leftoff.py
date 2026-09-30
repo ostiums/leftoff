@@ -439,6 +439,22 @@ class SyncTests(unittest.TestCase):
                                 f"{json.loads(self.state.read_text())[info.id]['session_id']}.jsonl")
         self.assertIn("new message", recs[-2]["message"]["content"])
 
+    def test_sync_skips_while_another_sync_runs(self):
+        with cr.sync_lock(self.state) as got:
+            self.assertTrue(got)
+            res = self.sync()
+        self.assertEqual((res.imported, res.unchanged), (0, 0))
+        self.assertFalse((self.claude / "projects").exists())
+        self.assertEqual(self.sync().imported, 3)
+
+    def test_atomic_write_uses_a_private_temp_file(self):
+        target = Path(self.tmp.name) / "out.json"
+        (Path(self.tmp.name) / "out.json.tmp").write_text("another writer's temp file")
+        cr.atomic_write(target, "mine")
+        self.assertEqual(target.read_text(), "mine")
+        self.assertEqual((Path(self.tmp.name) / "out.json.tmp").read_text(), "another writer's temp file")
+        self.assertEqual(sorted(p.name for p in Path(self.tmp.name).glob("out.json*")), ["out.json", "out.json.tmp"])
+
 
 class AutosyncTests(unittest.TestCase):
     CMD = "/opt/bin/leftoff sync --quiet"

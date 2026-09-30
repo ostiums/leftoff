@@ -8,7 +8,9 @@ opened with `claude --resume`.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import fcntl
 import json
 import os
 import shlex
@@ -93,9 +95,13 @@ def read_json(path: Path) -> dict:
 
 
 def atomic_write(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    # A temp name of its own, so two writers never share (and steal) one temp file.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def truncate(s: str, limit: int) -> str:
@@ -429,9 +435,28 @@ class SyncResult:
     unchanged: int
 
 
+@contextlib.contextmanager
+def sync_lock(state_path: Path):
+    """Yield True if this process got the sync lock, False if another sync holds it."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(state_path.with_name(state_path.name + ".lock"), "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True  # released when the file is closed
+
+
 def sync(codex_home: Path, claude_dir: Path, state_path: Path, get_version) -> SyncResult:
     """Import every new or changed Codex chat. Rollouts whose mtime and size match the
-    last sync are skipped without being opened, so a no-op sync costs one stat per file."""
+    last sync are skipped without being opened, so a no-op sync costs one stat per file.
+    Claude sessions started together (parallel chats) run one sync, the others return at once."""
+    with sync_lock(state_path) as got:
+        return _sync(codex_home, claude_dir, state_path, get_version) if got else SyncResult(0, 0)
+
+
+def _sync(codex_home: Path, claude_dir: Path, state_path: Path, get_version) -> SyncResult:
     known = read_json(state_path).get(SOURCES_KEY, {})
     sources, imported, unchanged = {}, 0, 0
     titles = origin = version = None
