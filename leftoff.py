@@ -536,13 +536,14 @@ def _is_autosync_entry(entry) -> bool:
         for h in entry.get("hooks") or [])
 
 
-PLUGIN_ID = "leftoff@leftoff"  # plugin@marketplace, as /plugin installs it from this repo
+PLUGIN_ID = "leftoff@ostiums"  # plugin@marketplace, as /plugin installs it from this repo
+OLD_PLUGIN_ID = "leftoff@leftoff"  # 0.2.0, when the marketplace was named after the plugin
 
 
 def plugin_enabled(settings_path: Path) -> bool:
     """True if the leftoff Claude Code plugin is on; its own hook then does the syncing."""
     plugins = _load_settings(settings_path).get("enabledPlugins")
-    return isinstance(plugins, dict) and plugins.get(PLUGIN_ID) is True
+    return isinstance(plugins, dict) and any(plugins.get(i) is True for i in (PLUGIN_ID, OLD_PLUGIN_ID))
 
 
 def autosync_enabled(settings_path: Path) -> bool:

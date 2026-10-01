@@ -740,7 +740,7 @@ class CliTests(unittest.TestCase):
         settings = self.root / "claude" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         data = json.loads(settings.read_text()) if settings.exists() else {}
-        data["enabledPlugins"] = {"leftoff@leftoff": True}
+        data["enabledPlugins"] = {"leftoff@ostiums": True}
         settings.write_text(json.dumps(data))
         return settings
 
@@ -753,7 +753,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Autosync is on: the leftoff plugin", out)
         self.assertFalse(cr.autosync_enabled(settings))  # the plugin's own hook is enough
         self.assertNotIn("installer's hook", out)
-        self.assertEqual(json.loads(settings.read_text())["enabledPlugins"], {"leftoff@leftoff": True})
+        self.assertEqual(json.loads(settings.read_text())["enabledPlugins"], {"leftoff@ostiums": True})
         _, out, _ = self.run_main("autosync")
         self.assertIn("is on", out)
 
@@ -768,16 +768,22 @@ class CliTests(unittest.TestCase):
 
     def test_disabled_plugin_does_not_count(self):
         settings = self.enable_plugin()
-        settings.write_text(json.dumps({"enabledPlugins": {"leftoff@leftoff": False}}))
+        settings.write_text(json.dumps({"enabledPlugins": {"leftoff@ostiums": False}}))
         _, out, _ = self.run_main("autosync")
         self.assertIn("Autosync is off", out)
 
+    def test_plugin_installed_under_the_old_marketplace_name_counts(self):
+        settings = self.enable_plugin()
+        settings.write_text(json.dumps({"enabledPlugins": {"leftoff@leftoff": True}}))
+        _, out, _ = self.run_main("autosync")
+        self.assertIn("the leftoff plugin syncs", out)
+
     def test_update_inside_plugin_points_to_plugin_manager(self):
-        copy = self.root / "claude" / "plugins" / "cache" / "leftoff" / "leftoff" / "0.2.0"
+        copy = self.root / "claude" / "plugins" / "cache" / "ostiums" / "leftoff" / "0.2.1"
         copy.mkdir(parents=True)
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(cr.update(Path(os.path.realpath(copy))), 1)
-        self.assertIn("claude plugin update leftoff@leftoff", err.getvalue())
+        self.assertIn("claude plugin update leftoff@ostiums", err.getvalue())
 
     def test_top_level_global_flag_same_as_global(self):
         os.environ["CODEX_HOME"] = str(self.root / "empty")
@@ -1067,7 +1073,7 @@ class InstallerTests(unittest.TestCase):
         p = self.home / ".claude" / "settings.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         data = self.settings()
-        data["enabledPlugins"] = {"leftoff@leftoff": True}
+        data["enabledPlugins"] = {"leftoff@ostiums": True}
         p.write_text(json.dumps(data))
 
     def test_with_plugin_installs_only_the_terminal_command(self):
@@ -1087,7 +1093,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.autosync_on())
         self.assertFalse((self.home / ".claude/commands/leftoff.md").exists())
-        self.assertEqual(self.settings()["enabledPlugins"], {"leftoff@leftoff": True})
+        self.assertEqual(self.settings()["enabledPlugins"], {"leftoff@ostiums": True})
 
 
 if __name__ == "__main__":

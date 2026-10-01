@@ -234,8 +234,9 @@ on, the installers add only the terminal command (see below).
 ## Claude Code plugin
 
 The repo is also a plugin and a one-plugin marketplace (`.claude-plugin/plugin.json`,
-`.claude-plugin/marketplace.json` with `source: "./"`), installed as `leftoff@leftoff`:
-`/plugin marketplace add ostiums/leftoff`, `/plugin install leftoff@leftoff`. The plugin
+`.claude-plugin/marketplace.json` with `source: "./"`). The marketplace is named `ostiums`,
+after the owner and not the plugin, so the plugin is installed as `leftoff@ostiums`:
+`/plugin marketplace add ostiums/leftoff`, `/plugin install leftoff@ostiums`. The plugin
 root is the repo root, so it carries `leftoff.py` itself.
 
 - `commands/leftoff.md` is picked up as the plugin's `/leftoff` (also `/leftoff:leftoff`).
@@ -250,8 +251,9 @@ root is the repo root, so it carries `leftoff.py` itself.
   `py -3` for 3.9+ and execs the first that works. The probe skips the Microsoft Store
   `python3` stub. Under Git Bash the script path goes through `cygpath -w`.
 - `version` in `plugin.json` is explicit, so users get an update only when it is bumped.
-- The plugin is detected through `enabledPlugins["leftoff@leftoff"]` in the user
-  `settings.json`. Then `autosync` reports the plugin's hook and never writes its own
+- The plugin is detected through `enabledPlugins["leftoff@ostiums"]` in the user
+  `settings.json` (also `leftoff@leftoff`, the id in 0.2.0, when the marketplace was named
+  `leftoff`). Then `autosync` reports the plugin's hook and never writes its own
   (`autosync on` removes one left by the installer), the installers skip `/leftoff` in
   `~/.claude/commands`, and `leftoff update` in the plugin's cache points to `/plugin`.
   While the installer's hook is still there next to the plugin, `autosync status` says so

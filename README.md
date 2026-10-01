@@ -21,10 +21,12 @@ In Claude Code:
 
 ```
 /plugin marketplace add ostiums/leftoff
-/plugin install leftoff@leftoff
+/plugin install leftoff@ostiums
 ```
 
 Then run `/leftoff` to import the chats you already have (if the install summary asks for it, run `/reload-plugins` first). From then on the plugin syncs new chats every time Claude Code starts. It works the same on macOS, Linux and Windows. What the hook runs and why is explained [below](#the-sync-hook).
+
+Installed it as `leftoff@leftoff`? The marketplace is called `ostiums` now: run `/plugin uninstall leftoff@leftoff` and `/plugin marketplace remove leftoff`, then the two lines above.
 
 Installed leftoff with the curl line before? Run `leftoff update` after installing the plugin. The installer then removes its own hook and `/leftoff`, which the plugin replaces, and keeps the terminal command.
 
@@ -206,8 +208,8 @@ import state are carried over. The old GitHub URL redirects to the new one.
 The plugin, in Claude Code:
 
 ```
-/plugin uninstall leftoff@leftoff
-/plugin marketplace remove leftoff
+/plugin uninstall leftoff@ostiums
+/plugin marketplace remove ostiums
 ```
 
 Imported chats stay in `/resume`. The import state is in `~/.local/state/leftoff`, delete it too if you're not keeping the terminal command.
