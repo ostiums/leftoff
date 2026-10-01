@@ -30,25 +30,9 @@ Installed it as `leftoff@leftoff`? The marketplace is called `ostiums` now: run 
 
 Installed leftoff with the curl line before? Run `leftoff update` after installing the plugin. The installer then removes its own hook and `/leftoff`, which the plugin replaces, and keeps the terminal command.
 
-On Windows the plugin needs Git for Windows, because Claude Code runs plugin hooks in Git Bash. Without it, use the Windows installer below, which does everything the plugin does.
+On Windows the plugin needs Git for Windows, because Claude Code runs plugin hooks in Git Bash. Without it, use the [Windows installer](#installer-details), which does everything the plugin does.
 
 Claude Code's built-in `/import codex` brings over Codex configuration (MCP servers, AGENTS.md). leftoff brings over the chats.
-
-### The `leftoff` command in the terminal
-
-Optional: a picker over the chats that ran in the current folder, which opens the chosen one in Claude. It's handy when you're not in Claude yet. The installer adds it:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/ostiums/leftoff/main/install.sh | zsh
-```
-
-On Windows, in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/ostiums/leftoff/main/install.ps1 | iex
-```
-
-Next to the plugin the installer adds only this command. Without the plugin it also adds `/leftoff` and the sync hook, so it works as a complete install on its own (see [Installer details](#installer-details)).
 
 ## The sync hook
 
@@ -126,6 +110,8 @@ Two leftoff features come from this comparison. Images you attached in Codex are
 
 ## Usage
 
+The `leftoff` command in the terminal comes with the [installer](#installer-details), the plugin doesn't add it.
+
 ```sh
 leftoff                     # chats from the CURRENT folder: pick one in fzf and open it in Claude
 leftoff global              # same, across all folders (-g / --global is a synonym)
@@ -167,7 +153,19 @@ are titled `⬡ Codex: <title>` or `⬡ ChatGPT: <title>`), `Ctrl+A` shows chats
 
 ## Installer details
 
-The installer:
+The installer adds the `leftoff` command to the terminal: a picker over the chats that ran in the current folder, which opens the chosen one in Claude. Without the plugin it is also a complete install on its own.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ostiums/leftoff/main/install.sh | zsh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ostiums/leftoff/main/install.ps1 | iex
+```
+
+It:
 - clones the repo into `~/.local/share/leftoff` and links `~/.local/bin/leftoff`
 - copies the `/leftoff` slash command to `~/.claude/commands/`
 - turns on autosync: an async `SessionStart` hook in `~/.claude/settings.json` runs `leftoff sync --quiet` at every Claude start (see [The sync hook](#the-sync-hook))
