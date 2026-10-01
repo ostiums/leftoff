@@ -41,9 +41,13 @@ PREVIEW_TURNS = 15
 PREVIEW_CHARS = 600
 TITLE_PREFIX = "⬡ Codex: "  # hexagon marks imported chats in /resume; plain text, so search and rename keep working
 WORK_TITLE_PREFIX = "⬡ ChatGPT: "
+TITLE_MARKERS = re.compile(f"^(?:{re.escape(TITLE_PREFIX)}|{re.escape(WORK_TITLE_PREFIX)})+")
 WORK = "ChatGPT Work"  # ChatGPT app's Work mode runs the Codex agent and writes the same rollouts
 SOURCE_COLORS = {WORK: "32", "Codex App": "36", "Codex CLI": "35", "Codex IDE": "33"}  # ANSI, themed by the terminal
 LEAD_USER_TEXT = "[Continuing a chat from Codex]"
+# How the context header starts (the second one is from before the header was in English): a Codex
+# chat that opens with it is Codex's own copy of a session leftoff wrote.
+MOVED_PREFIXES = ("[This chat was moved from ", "[Этот чат перенесён из ")
 NOISE_PREFIXES = (
     "<environment_context>", "<app-context>", "<recommended_plugins>",
     "<guardian_tool_descriptions>", "<user_instructions>", "<INSTRUCTIONS>",
@@ -241,7 +245,7 @@ def build_turns(items: list[Item], header: str | None = None, max_chars: int = T
 
 def context_header(date: str, cwd: str, source: str = "Codex App") -> str:
     where, agent = ("ChatGPT (Work mode)", "ChatGPT") if source == WORK else ("Codex", "Codex")
-    return (f"[This chat was moved from {where} ({date}, cwd {cwd}). The assistant replies below "
+    return (f"{MOVED_PREFIXES[0]}{where} ({date}, cwd {cwd}). The assistant replies below "
             f"were written by the {agent} agent; [Codex tool: …] blocks are commands it ran and "
             "their output. Continue the work with this history in mind.]")
 
@@ -261,6 +265,8 @@ class SessionInfo:
     from_claude: bool
     is_chat: bool
     source: str = "Codex App"
+    copied_from: Path | None = None  # a copy continued in Codex: the Claude session file Codex imported it from
+    copied_mtime: int = 0  # that file's mtime_ns at the time, per Codex's registry
 
 
 def one_line(s: str, n: int = 60) -> str:
@@ -293,10 +299,30 @@ def _load_titles(codex_home: Path) -> dict[str, str]:
     return {r["id"]: r["thread_name"] for r in records if r.get("id") and r.get("thread_name")}
 
 
-def _load_claude_origin(codex_home: Path) -> dict[str, str]:
+def split_header(text: str) -> tuple[str, str]:
+    """The context header a message opens with ("" if none) and the rest of the message."""
+    if not text.startswith(MOVED_PREFIXES):
+        return "", text
+    header, _, rest = text.partition("\n\n")
+    return header, rest
+
+
+def _load_claude_origin(codex_home: Path) -> dict[str, dict]:
     data = read_json(codex_home / "external_agent_session_imports.json")
-    return {r["imported_thread_id"]: r.get("title") or ""
+    return {r["imported_thread_id"]: r
             for r in data.get("records", []) if isinstance(r, dict) and r.get("imported_thread_id")}
+
+
+def _bare_title(title: str) -> str:
+    """Title of a copy without what leftoff added to the session it was copied from: the header and the markers."""
+    return TITLE_MARKERS.sub("", split_header(title)[1].lstrip())
+
+
+def _int_or_zero(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _session_files(codex_home: Path) -> list[Path]:
@@ -321,12 +347,24 @@ def _read_session(path: Path, titles: dict, origin: dict) -> SessionInfo | None:
     turn_cwds = [r["payload"]["cwd"] for r in records if r.get("type") == "turn_context"
                  and isinstance(r.get("payload"), dict) and r["payload"].get("cwd")]
     user_texts = [i.text for i in extract_items(records) if i.role == "user"]
-    title = titles.get(sid) or origin.get(sid) or (user_texts[0] if user_texts else "") or "(untitled)"
+    copied = origin.get(sid) or {}
+    # Codex imports Claude sessions as threads of its own, leftoff's included. Such a copy holds
+    # nothing Claude doesn't have until a turn is run on it in Codex, and only that writes a turn_context.
+    registered = sid in origin
+    is_copy = registered or bool(user_texts and split_header(user_texts[0])[0])
+    continued = is_copy and any(r.get("type") == "turn_context" for r in records)
+    candidates = [titles.get(sid), copied.get("title"), user_texts[0] if user_texts else ""]
+    if is_copy:
+        candidates = [_bare_title(t) for t in candidates if t]
+    title = next((t for t in candidates if t), "(untitled)")
     return SessionInfo(
         id=sid, path=path, cwd=_plain_path((turn_cwds[-1] if turn_cwds else meta.get("cwd")) or str(Path.home())),
         started=meta.get("timestamp") or "", updated=path.stat().st_mtime,
-        title=one_line(title), user_turns=len(user_texts), from_claude=sid in origin,
-        is_chat=not is_subagent(meta) and bool(user_texts), source=source_of(meta),
+        title=one_line(title), user_turns=len(user_texts), from_claude=registered,
+        is_chat=not is_subagent(meta) and bool(user_texts) and (continued or not is_copy), source=source_of(meta),
+        # Only a continued copy may overwrite the session it came from, so only it gets to know which one.
+        copied_from=Path(copied["source_path"]) if continued and copied.get("source_path") else None,
+        copied_mtime=_int_or_zero(copied.get("source_modified_at")),
     )
 
 
@@ -418,10 +456,51 @@ def _count_lines(path: Path) -> int:
         return sum(1 for _ in f)
 
 
+def _grown(path: Path, entry: dict) -> bool:
+    """True if a session file has more lines than leftoff wrote: Claude has continued it."""
+    return _count_lines(path) > entry.get("lines_written", 0)
+
+
+def _session_owner(info: SessionInfo, state: dict, project: Path) -> str | None:
+    """For a copy continued in Codex: the state key (a Codex id) of the Claude session it may overwrite.
+
+    That is the session Codex copied it from: the copy holds all of it plus the new turns. Only
+    a session leftoff wrote, in the copy's own project folder, that Claude hasn't grown since
+    and, until the copy has taken it over, that still has the mtime Codex saw. A Claude chat
+    leftoff didn't write is never overwritten."""
+    source = info.copied_from
+    if source is None or not _same_path(str(source.parent), str(project)):
+        return None
+    if (state.get(info.id) or {}).get("session_id") == source.stem:
+        owner = info.id  # taken over at an earlier import; leftoff itself changed the mtime then
+    else:
+        # After a takeover the chat the session first came from still points at it, with
+        # lines_written 0: that entry comes first here and turns a second copy away.
+        owner = next((k for k, v in state.items() if k != SOURCES_KEY and isinstance(v, dict)
+                      and v.get("session_id") == source.stem), None)
+    try:
+        if owner is None or _grown(source, state[owner]):
+            return None
+        if owner != info.id and source.stat().st_mtime_ns != info.copied_mtime:
+            return None
+    except OSError:
+        return None
+    return owner
+
+
 def import_session(info: SessionInfo, claude_dir: Path, state_path: Path, version: str) -> ImportResult:
     cwd = info.cwd if os.path.isdir(info.cwd) else str(Path.home())
     records, _ = load_jsonl(info.path)
-    turns = build_turns(extract_items(records), context_header(info.started[:10], info.cwd, info.source))
+    items = extract_items(records)
+    header = context_header(info.started[:10], info.cwd, info.source)
+    first = next((i for i in items if i.role == "user"), None)
+    own_header, rest = split_header(first.text) if first else ("", "")
+    if own_header:
+        # A copy of a session leftoff wrote: its own header goes back on top after the size cut.
+        header, first.text = own_header, rest
+        if not rest:
+            items.remove(first)
+    turns = build_turns(items, header)
     if not turns:
         raise ValueError("This chat has no messages to carry over")
 
@@ -430,19 +509,26 @@ def import_session(info: SessionInfo, claude_dir: Path, state_path: Path, versio
     project = claude_dir / "projects" / project_slug(cwd)
     project.mkdir(parents=True, exist_ok=True)
 
-    # Take the first free session id, or the one written last time if Claude hasn't grown it since.
+    # A continued copy goes into the session it was copied from. Anything else takes the first
+    # free session id, or the one written last time if Claude hasn't grown it since.
     k = 0
-    while True:
-        sid = str(uuid.uuid5(NAMESPACE, info.id if k == 0 else f"{info.id}:{k}"))
-        path = project / f"{sid}.jsonl"
-        if not path.exists():
-            break
-        if prev.get("session_id") == sid and _count_lines(path) <= prev.get("lines_written", 0):
-            break
-        k += 1
+    owner = _session_owner(info, state, project)
+    if owner:
+        sid, path = info.copied_from.stem, info.copied_from
+    else:
+        while True:
+            sid = str(uuid.uuid5(NAMESPACE, info.id if k == 0 else f"{info.id}:{k}"))
+            path = project / f"{sid}.jsonl"
+            if not path.exists():
+                break
+            if prev.get("session_id") == sid and not _grown(path, prev):
+                break
+            k += 1
 
     out = render_records(turns, sid, cwd, version, info.title, info.source)
     atomic_write(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out))
+    if owner and owner != info.id:
+        state[owner]["lines_written"] = 0  # the session is the copy's now: the chat it came from gets a new one
     state[info.id] = {"session_id": sid, "lines_written": len(out)}
     state.setdefault(SOURCES_KEY, {})[str(info.path)] = _source_stamp(info.path)
     state_path.parent.mkdir(parents=True, exist_ok=True)

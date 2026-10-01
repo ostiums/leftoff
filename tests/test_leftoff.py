@@ -40,6 +40,30 @@ def cout(cid, texts):
                   "output": [{"type": "input_text", "text": t} for t in texts]})
 
 
+def tc(cwd="/tmp"):
+    return {"timestamp": TS, "type": "turn_context", "payload": {"cwd": cwd}}
+
+
+def register_import(codex_home, thread_id, source, title=""):
+    """Add a record to Codex's registry of chats it imported from Claude."""
+    path = Path(codex_home) / "external_agent_session_imports.json"
+    data = json.loads(path.read_text()) if path.exists() else {"records": []}
+    data["records"].append({"imported_thread_id": thread_id, "title": title, "source_path": str(source),
+                            "source_modified_at": str(Path(source).stat().st_mtime_ns)})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data))
+
+
+def claude_user(text):
+    """A user line as Claude Code appends it when a session is continued."""
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+def append(path, record):
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def write_rollout(codex_home, records, day="2026/09/21", name=None):
     d = Path(codex_home) / "sessions" / day
     d.mkdir(parents=True, exist_ok=True)
@@ -225,7 +249,6 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(len(cr.discover(self.home, include_all=True)), 4)
 
     def test_cwd_from_last_turn_context(self):
-        tc = lambda cwd: {"timestamp": TS, "type": "turn_context", "payload": {"cwd": cwd}}
         write_rollout(self.home, [meta(id="tc-0000001", cwd="/start"), tc("/start"), msg("user", "q"),
                                   tc("/moved"), msg("user", "q2")])
         self.assertEqual(cr.discover(self.home)[0].cwd, "/moved")
@@ -238,7 +261,7 @@ class DiscoverTests(unittest.TestCase):
 
     def test_title_priority(self):
         write_rollout(self.home, [meta(id="t1-0000001"), msg("user", "first question")])
-        write_rollout(self.home, [meta(id="t2-0000002"), msg("user", "other")])
+        write_rollout(self.home, [meta(id="t2-0000002"), msg("user", "other"), tc(), msg("user", "more")])
         write_rollout(self.home, [meta(id="t3-0000003"), msg("user", "third")])
         (self.home / "session_index.jsonl").write_text(
             json.dumps({"id": "t1-0000001", "thread_name": "Old"}) + "\n" +
@@ -370,8 +393,7 @@ class WriteTests(unittest.TestCase):
     def test_reimport_after_continuation_keeps_old(self):
         info = self.session()
         first = cr.import_session(info, self.claude, self.state, "v")
-        with open(first.path, "a") as f:
-            f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "continued"}}) + "\n")
+        append(first.path, claude_user("continued"))
         before = first.path.read_text()
         second = cr.import_session(info, self.claude, self.state, "v")
         self.assertNotEqual(first.session_id, second.session_id)
@@ -429,8 +451,7 @@ class SyncTests(unittest.TestCase):
     def test_manual_import_then_continue_does_not_duplicate_on_sync(self):
         info = cr.find_session(self.codex, "syn-00000000")
         res = cr.import_session(info, self.claude, self.state, "v")
-        with open(res.path, "a") as f:
-            f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "continued"}}) + "\n")
+        append(res.path, claude_user("continued"))
         self.sync()
         copies = [p for p in (self.claude / "projects").glob("*/*.jsonl")
                   if "question 0" in p.read_text()]
@@ -438,8 +459,7 @@ class SyncTests(unittest.TestCase):
 
     def test_changed_chat_is_reimported(self):
         self.sync()
-        with open(self.chats[1], "a", encoding="utf-8") as f:
-            f.write(json.dumps(msg("user", "new message")) + "\n")
+        append(self.chats[1], msg("user", "new message"))
         res = self.sync()
         self.assertEqual((res.imported, res.unchanged), (1, 3))
         info = cr.find_session(self.codex, "syn-00000001")
@@ -462,6 +482,223 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "mine")
         self.assertEqual((Path(self.tmp.name) / "out.json.tmp").read_text(), "another writer's temp file")
         self.assertEqual(sorted(p.name for p in Path(self.tmp.name).glob("out.json*")), ["out.json", "out.json.tmp"])
+
+
+class CopyTests(unittest.TestCase):
+    """Codex imports Claude sessions as threads of its own; those copies must not come back."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.codex, self.claude, self.state = root / "codex", root / "claude", root / "state.json"
+        self.cwd = root / "w"
+        self.cwd.mkdir()
+        self.original = write_rollout(self.codex, [meta(id="org-00000001", cwd=str(self.cwd)), tc(str(self.cwd)),
+                                                   msg("user", "question"), msg("assistant", "answer")])
+        self.sync()
+        self.session = self.sessions()[0]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def sync(self):
+        return cr.sync(self.codex, self.claude, self.state, lambda: "v")
+
+    def sessions(self):
+        return sorted((self.claude / "projects").glob("*/*.jsonl"))
+
+    def copy(self, source, continued=False, registered=True, id="cpy-00000002", cwd=None, title=None):
+        """What Codex writes when it imports the Claude session `source`: its messages, no turn_context."""
+        recs, _ = cr.load_jsonl(source)
+        if title is None:
+            title = next((r["customTitle"] for r in recs if r["type"] == "custom-title"), "")
+        out = [meta(id=id, cwd=str(cwd or self.cwd))]
+        for r in recs:
+            if r["type"] in ("user", "assistant"):
+                content = r["message"]["content"]
+                out.append(msg(r["type"], content if isinstance(content, str) else content[0]["text"]))
+        if continued:
+            out += [tc(str(cwd or self.cwd)), msg("user", "more"), msg("assistant", "more answer")]
+        if registered:
+            register_import(self.codex, id, source, title)
+        return write_rollout(self.codex, out)
+
+    def first_message(self, path):
+        return cr.load_jsonl(path)[0][0]["message"]["content"]
+
+    def title(self, path):
+        return cr.load_jsonl(path)[0][-1]["customTitle"]
+
+    def state_of(self, codex_id):
+        return json.loads(self.state.read_text())[codex_id]
+
+    def assert_one_header(self, path):
+        self.assertEqual(self.first_message(path).count(cr.MOVED_PREFIXES[0]), 1)
+
+    def assert_own_session(self, before):
+        """The continued copy went to a session of its own and left the one it came from alone."""
+        self.assertEqual(self.sync().imported, 1)
+        self.assertEqual(self.session.read_text(), before)
+        new, = [p for p in self.sessions() if p != self.session]
+        return new
+
+    def test_untouched_copy_is_not_imported(self):
+        self.copy(self.session)
+        self.assertEqual(self.sync().imported, 0)
+        self.assertEqual(self.sessions(), [self.session])
+
+    def test_untouched_copy_is_not_reopened_by_the_next_sync(self):
+        self.copy(self.session)
+        self.sync()
+        res = self.sync()
+        self.assertEqual((res.imported, res.unchanged), (0, 2))
+
+    def test_untouched_copy_imported_by_id_gets_its_own_session(self):
+        self.copy(self.session)
+        before, written = self.session.read_text(), self.state_of("org-00000001")
+        res = cr.import_session(cr.find_session(self.codex, "cpy-00000002"), self.claude, self.state, "v")
+        self.assertNotEqual(res.path, self.session)
+        self.assertEqual(self.session.read_text(), before)
+        self.assertEqual(self.state_of("org-00000001"), written)
+        self.assert_one_header(res.path)
+
+    def test_untouched_copy_is_hidden_from_the_list_but_found_by_id(self):
+        self.copy(self.session)
+        self.assertEqual([s.id for s in cr.discover(self.codex)], ["org-00000001"])
+        self.assertEqual(len(cr.discover(self.codex, include_all=True)), 2)
+        self.assertEqual(cr.find_session(self.codex, "cpy-00000002").id, "cpy-00000002")
+
+    def test_continued_copy_updates_the_session_it_was_copied_from(self):
+        self.copy(self.session, continued=True)
+        self.assertEqual(self.sync().imported, 1)
+        self.assertEqual(self.sessions(), [self.session])
+        text = self.session.read_text()
+        self.assertIn("more answer", text)
+        self.assert_one_header(self.session)
+        self.assertEqual(self.title(self.session), "⬡ Codex: question")
+
+    def test_copy_continued_twice_keeps_updating_the_same_session(self):
+        copy = self.copy(self.session, continued=True)
+        self.sync()
+        append(copy, msg("user", "even more"))
+        self.assertEqual(self.sync().imported, 1)
+        self.assertEqual(self.sessions(), [self.session])
+        self.assertIn("even more", self.session.read_text())
+
+    def test_original_changed_after_its_session_was_taken_over_gets_a_new_session(self):
+        self.copy(self.session, continued=True)
+        self.sync()
+        append(self.original, msg("user", "back in the original"))
+        self.sync()
+        self.assertEqual(len(self.sessions()), 2)
+        self.assertIn("more answer", self.session.read_text())
+        self.assertNotIn("back in the original", self.session.read_text())
+
+    def test_continued_copy_of_a_session_continued_in_claude_gets_its_own(self):
+        self.copy(self.session, continued=True)
+        append(self.session, claude_user("in claude"))
+        new = self.assert_own_session(self.session.read_text())
+        self.assert_one_header(new)
+        self.assertEqual(self.title(new), "⬡ Codex: question")
+
+    def test_session_with_a_newer_mtime_is_not_overwritten(self):
+        self.copy(self.session, continued=True)
+        st = self.session.stat()
+        os.utime(self.session, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        self.assert_own_session(self.session.read_text())
+
+    def test_session_continued_in_claude_before_codex_copied_it_is_not_overwritten(self):
+        append(self.session, claude_user("in claude"))
+        self.copy(self.session, continued=True)  # the registry holds the mtime after that line
+        self.assert_own_session(self.session.read_text())
+
+    def test_session_continued_in_claude_after_the_copy_took_it_over_is_not_overwritten(self):
+        copy = self.copy(self.session, continued=True)
+        self.sync()
+        append(self.session, claude_user("in claude"))
+        append(copy, msg("user", "even more"))
+        self.assert_own_session(self.session.read_text())
+
+    def test_copy_moved_to_another_folder_gets_its_own_session(self):
+        other = Path(self.tmp.name) / "other"
+        other.mkdir()
+        self.copy(self.session, continued=True, cwd=other)
+        self.assert_own_session(self.session.read_text())
+
+    def test_shorter_copy_keeps_the_session_from_the_chat_it_came_from(self):
+        # Codex kept less of the session than leftoff wrote, so the line count alone can't tell
+        # the original chat that the session is no longer its own.
+        register_import(self.codex, "cpy-00000006", self.session, "⬡ Codex: question")
+        write_rollout(self.codex, [meta(id="cpy-00000006", cwd=str(self.cwd)), tc(str(self.cwd)), msg("user", "more")])
+        self.sync()
+        self.assertIn("more", self.session.read_text())
+        append(self.original, msg("user", "back in the original"))
+        self.sync()
+        self.assertNotIn("back in the original", self.session.read_text())
+        self.assertEqual(len(self.sessions()), 2)
+
+    def test_long_continued_copy_keeps_one_header(self):
+        out = [meta(id="cpy-00000007", cwd=str(self.cwd)), msg("user", self.first_message(self.session))]
+        for n in range(60):
+            out += [msg("assistant", "a" * 7000), msg("user", "u" * 7000)]
+        out += [tc(str(self.cwd)), msg("assistant", "tail")]
+        write_rollout(self.codex, out)
+        register_import(self.codex, "cpy-00000007", self.session, "⬡ Codex: question")
+        self.sync()
+        first = self.first_message(self.session)
+        self.assertTrue(first.startswith("[This chat was moved from"))
+        self.assertEqual(first.count("[This chat was moved from"), 1)
+        self.assertIn("earlier turns were not carried over", first)
+
+    def test_stacked_markers_are_stripped_from_a_copy_title(self):
+        self.copy(self.session, continued=True, title="⬡ Codex: ⬡ ChatGPT: ⬡ Codex: question")
+        self.sync()
+        self.assertEqual(self.title(self.session), "⬡ Codex: question")
+
+    def test_copy_titled_with_the_header_falls_back_to_its_first_message(self):
+        self.copy(self.session, continued=True, title="[This chat was moved from Codex (2026-09-21, cwd /w).]")
+        self.sync()
+        self.assertEqual(self.title(self.session), "⬡ Codex: question")
+
+    def test_marker_in_the_title_of_an_ordinary_chat_is_kept(self):
+        write_rollout(self.codex, [meta(id="ord-00000008"), msg("user", "⬡ Codex: what is this marker")])
+        self.assertIn("⬡ Codex: what is this marker", [s.title for s in cr.discover(self.codex)])
+
+    def test_header_starts_with_the_prefix_copies_are_recognized_by(self):
+        for source in ("Codex App", "ChatGPT Work"):
+            self.assertTrue(cr.context_header("2026-09-21", "/w", source).startswith(cr.MOVED_PREFIXES[0]))
+
+    def test_copy_of_a_native_claude_chat(self):
+        native = self.session.with_name("native.jsonl")
+        native.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "native chat"}}) + "\n")
+        self.copy(native, id="cpy-00000003")
+        self.assertEqual(self.sync().imported, 0)
+        before = native.read_text()
+        self.copy(native, continued=True, id="cpy-00000004")
+        self.assertEqual(self.sync().imported, 1)
+        self.assertEqual(native.read_text(), before)
+        self.assertEqual(len(self.sessions()), 3)
+
+    def test_header_marks_a_copy_when_the_registry_does_not(self):
+        self.copy(self.session, registered=False)
+        self.assertEqual(self.sync().imported, 0)
+        self.assertEqual([s.id for s in cr.discover(self.codex)], ["org-00000001"])
+
+    def test_earlier_russian_header_marks_a_copy_too(self):
+        write_rollout(self.codex, [meta(id="cpy-00000005"), msg("user", "[Этот чат перенесён из Codex (…)]\n\nq")])
+        self.assertEqual(self.sync().imported, 0)
+        write_rollout(self.codex, [meta(id="cpy-00000005", cwd=str(self.cwd)), tc(str(self.cwd)),
+                                   msg("user", "[Этот чат перенесён из Codex (…)]\n\nвопрос")])
+        self.assertEqual(self.sync().imported, 1)
+        new, = [p for p in self.sessions() if p != self.session]
+        self.assertTrue(self.first_message(new).startswith("[Этот чат перенесён из Codex (…)]\n\nвопрос"))
+        self.assertEqual(self.title(new), "⬡ Codex: вопрос")
+
+    def test_continued_copy_known_only_by_its_header_gets_its_own_session(self):
+        self.copy(self.session, continued=True, registered=False)
+        new = self.assert_own_session(self.session.read_text())
+        self.assert_one_header(new)
+        self.assertEqual(self.title(new), "⬡ Codex: question")
 
 
 class AutosyncTests(unittest.TestCase):

@@ -150,6 +150,7 @@ are titled `⬡ Codex: <title>` or `⬡ ChatGPT: <title>`), `Ctrl+A` shows chats
 - Attached images (PNG, JPEG, GIF, WebP up to 5 MB) cost roughly 1 to 1.5k tokens each per request. Screenshots taken by Codex tools are not embedded, the tool output shows `[screenshot]` instead.
 - The first message starts with a note that the chat was moved from Codex, so Claude treats the `[Codex tool: …]` blocks as the Codex agent's actions.
 - `↩Claude` in the list marks chats that Codex itself once imported from Claude.
+- A chat that Codex imported from Claude is skipped until you continue it in Codex: until then Claude already has everything in it. This also keeps chats from bouncing between the two apps and piling up as duplicates. Once continued, a copy of a chat that leftoff brought over updates that same Claude session instead of adding a second one.
 
 ## Installer details
 

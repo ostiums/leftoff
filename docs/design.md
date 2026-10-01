@@ -32,8 +32,8 @@ reasoning.
   last line per id wins).
 - Claude-origin registry: `~/.codex/external_agent_session_imports.json`
   (`records[].imported_thread_id`, `title`, `source_path`) — chats Codex itself
-  imported from Claude. Used for the title fallback and an `↩Claude` marker in
-  the list.
+  imported from Claude. Used for the title fallback, an `↩Claude` marker in
+  the list, and to tell copies from chats (see "Copies of Claude sessions").
 
 Record shapes used (line = `{timestamp, type, payload}`):
 
@@ -53,11 +53,47 @@ Excluded from listing: sessions whose `session_meta.source` is an object with
 `subagent`, or whose `thread_source == "guardian_review"` (approval reviewers),
 and sessions with zero real user messages after filtering.
 
+### Copies of Claude sessions
+
+Codex imports Claude sessions as threads of its own, including the sessions leftoff wrote.
+Importing those back would loop: every round adds another `⬡ Codex: ⬡ Codex: …` session on
+each side (measured: 112 of 176 registry records pointed at leftoff's own sessions, 41 of
+them copies of copies).
+
+A thread is a copy if its id is an `imported_thread_id` in the registry, or if its first user
+message starts with our context header (`MOVED_PREFIXES`, the English header and the earlier
+Russian one). The header is the fallback for threads the registry doesn't list; it only
+catches copies of leftoff's sessions, and only while Codex keeps the first message.
+
+A copy is untouched until a turn is run on it in Codex, and only that writes a `turn_context`
+record (the import itself writes `session_meta`, `response_item` and `event_msg` only). An
+untouched copy holds nothing Claude doesn't have, so it is not a chat: `sync` skips it, the
+list and the picker hide it (`list --all` shows it), an explicit id still resolves and
+imports it into a session of its own.
+
+A copy that was continued is imported. If it opens with our header, that header is taken off
+the first message and put back on top after the size cut, in place of a new one, so there is
+always exactly one. The header and any `⬡ …:` prefixes are stripped from a copy's title; if
+that leaves a title source empty, the next one is used. Titles of ordinary chats are left as
+they are.
+
+- Into the Claude session it was copied from, when leftoff wrote that session, it sits in
+  the project folder of the copy's cwd, its mtime still equals the registry's
+  `source_modified_at` (nanoseconds, exact) and it has no more lines than leftoff wrote. The
+  copy holds all of that session plus the new turns, so `/resume` keeps one line. The state
+  then maps the copy's id to that session, and the entry of the chat it first came from gets
+  `lines_written: 0`, so a later change to that chat goes to a fresh session. On later
+  imports of the same copy only the line count is checked: the mtime is leftoff's own by then.
+  A second copy of the same session gets a session of its own.
+- Otherwise into a session of its own, as any other chat. A Claude chat leftoff didn't write
+  is never overwritten.
+
 ### Title
 
 First non-empty of: latest `thread_name` from `session_index.jsonl`; `title`
 from the Claude-origin registry; first real user message (single line, 60
-chars).
+chars). Leading `⬡ Codex: ` / `⬡ ChatGPT: ` prefixes and our context header are
+stripped, so the title of a copy doesn't stack markers.
 
 ## Conversion
 
@@ -290,6 +326,7 @@ Same layout under `%USERPROFILE%` (`~\.codex`, `~\.claude`, `~\.local\…`). Wha
 `unittest` (stdlib) with small fixture rollouts covering: noise filter,
 developer drop, tool call rendering + truncation + pairing, compaction,
 turn alternation, subagent exclusion, title priority, slug, re-import
-protection, id suffix resolution. Plus a manual end-to-end check: import one
+protection, id suffix resolution, copies of Claude sessions (skipped, updated in
+place, kept apart). Plus a manual end-to-end check: import one
 real chat, `claude --resume` it, ask "what were we talking about?", confirm the answer
 reflects the Codex chat.
